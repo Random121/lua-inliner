@@ -23,7 +23,7 @@ public sealed class Inliner
         _errorOnSeverity = errorOnSeverity;
     }
 
-    static SyntaxNode InlineFile(SourceText source)
+    public static SyntaxNode InlineFile(SourceText source)
     {
         return default;
     }

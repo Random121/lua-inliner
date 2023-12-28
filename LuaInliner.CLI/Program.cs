@@ -21,7 +21,7 @@ internal static class Program
         SourceText fileSourceText = GetFileSourceText(filePath);
     }
 
-    static SourceText GetFileSourceText(string filePath)
+    private static SourceText GetFileSourceText(string filePath)
     {
         SourceText fileSourceText;
 

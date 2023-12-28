@@ -8,7 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="DotNext" Version="4.15.2" />
-    <PackageReference Include="Loretta.CodeAnalysis.Lua" Version="0.2.11" />
   </ItemGroup>
 
 </Project>
