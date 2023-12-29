@@ -11,4 +11,8 @@
     <PackageReference Include="Loretta.CodeAnalysis.Lua" Version="0.2.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\LuaInliner.Common\LuaInliner.Common.csproj" />
+  </ItemGroup>
+
 </Project>
