@@ -2,6 +2,7 @@
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
 using LuaInliner.Common;
+using LuaInliner.Core.Collectors;
 using System.Collections.Immutable;
 
 namespace LuaInliner.Core;
@@ -39,6 +40,16 @@ public sealed class Inliner(
         }
 
         SyntaxNode root = tree.GetRoot();
+
+        var res = InlineFunctionCollector.Collect(root);
+
+        if (res.IsOk)
+        {
+            foreach (var val in res.Ok.Value)
+            {
+                Console.WriteLine(val);
+            }
+        }
 
         return Result.Ok<SyntaxNode, ImmutableArray<Diagnostic>>(root);
     }

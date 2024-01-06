@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace LuaInliner.Core;
 
-internal static class Diagnostics
+internal static class InlinerDiagnostics
 {
     private const string DIAGNOSTIC_CATEGORY = "LuaInliner";
 

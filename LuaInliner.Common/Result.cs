@@ -4,7 +4,7 @@ namespace LuaInliner.Common;
 
 /// <summary>
 /// A type that represents either a success value (<see cref="T"/>)
-/// or a failure/error value (<see cref="E"/>)
+/// or a failure/error value (<see cref="E"/>).
 /// </summary>
 /// <typeparam name="T">Type of the success value</typeparam>
 /// <typeparam name="E">Type of the failure/error value</typeparam>
