@@ -9,16 +9,25 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
 namespace LuaInliner.Core.Collectors;
 
+/// <summary>
+/// Information about an inline function
+/// </summary>
+/// <param name="DeclarationNode"></param>
+/// <param name="Parameters"></param>
+/// <param name="Body"></param>
+/// <param name="MaxReturnCount">Maximum number of values which the function returns</param>
 internal record InlineFunctionInfo(
     LocalFunctionDeclarationStatementSyntax DeclarationNode,
     SeparatedSyntaxList<NamedParameterSyntax> Parameters,
-    SyntaxList<StatementSyntax> Body
+    SyntaxList<StatementSyntax> Body,
+    int MaxReturnCount
 );
 
 /// <summary>
@@ -57,8 +66,8 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         LocalFunctionDeclarationStatementSyntax node
     )
     {
-        SyntaxTriviaList bodyTrivia = GetFunctionBodyLeadingTrivia(node);
-        Result<SyntaxTrivia, Unit> inlineDirective = GetInlineDirective(bodyTrivia);
+        SyntaxTriviaList leadingBodyTrivia = GetFunctionBodyLeadingTrivia(node);
+        Result<SyntaxTrivia, Unit> inlineDirective = GetInlineDirective(leadingBodyTrivia);
 
         // Not an inline function
         if (inlineDirective.IsErr)
@@ -69,7 +78,8 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
 
         SyntaxTrivia inlineDirectiveTrivia = inlineDirective.Ok.Value;
 
-        SyntaxList<StatementSyntax> body = GetStatementsWithoutInlineDirective(
+        // Remove the inline directive from the function body
+        SyntaxList<StatementSyntax> cleanFunctionBody = GetStatementsWithoutInlineDirective(
             node.Body.Statements,
             inlineDirectiveTrivia
         );
@@ -80,7 +90,28 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         {
             SeparatedSyntaxList<NamedParameterSyntax> parameters = namedParameters.Ok.Value;
 
-            InlineFunctionInfo info = new(node, parameters, body);
+            // Get the return statement nodes for the current function.
+            // We don't descent into inner functions since they contain returns
+            // that are irrelevant to the outer function.
+            ImmutableArray<ReturnStatementSyntax> returnNodes = node.Body
+                .DescendantNodes(
+                    node =>
+                        node.Kind() switch
+                        {
+                            SyntaxKind.AnonymousFunctionExpression
+                            or SyntaxKind.LocalFunctionDeclarationStatement
+                            or SyntaxKind.FunctionDeclarationStatement
+                                => false,
+                            _ => true
+                        }
+                )
+                .Where(node => node.IsKind(SyntaxKind.ReturnStatement))
+                .Cast<ReturnStatementSyntax>()
+                .ToImmutableArray();
+
+            int maxReturnCount = returnNodes.Max(node => node.Expressions.Count);
+
+            InlineFunctionInfo info = new(node, parameters, cleanFunctionBody, maxReturnCount);
 
             _functions.Add(info);
         }
@@ -149,7 +180,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
     /// <returns></returns>
     private static Result<SyntaxTrivia, Unit> GetInlineDirective(SyntaxTriviaList trivias)
     {
-        // TODO: Add a dynamic way of determining the inline directive (user customizable)
+        // FIXME: Add a dynamic way of determining the inline directive (user customizable)
         const string INLINE_DIRECTIVE = "--!!INLINE_FUNCTION";
 
         if (!trivias.Any())
