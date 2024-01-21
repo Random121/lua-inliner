@@ -6,7 +6,7 @@ using System.Collections.Immutable;
 
 namespace LuaInliner.Core.Collectors;
 
-internal record InlineFunctionCallInfo(
+internal record class InlineFunctionCallInfo(
     InlineFunctionInfo CalledFunction,
     FunctionCallExpressionSyntax CallExpression
 );

@@ -1,10 +1,4 @@
-﻿using DotNext.Collections.Generic;
-using Loretta.CodeAnalysis;
-using Loretta.CodeAnalysis.Lua;
-using Loretta.CodeAnalysis.Lua.Syntax;
-using LuaInliner.Common;
-using LuaInliner.Core.Extensions;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
@@ -13,6 +7,12 @@ using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using DotNext.Collections.Generic;
+using Loretta.CodeAnalysis;
+using Loretta.CodeAnalysis.Lua;
+using Loretta.CodeAnalysis.Lua.Syntax;
+using LuaInliner.Common;
+using LuaInliner.Core.Extensions;
 
 namespace LuaInliner.Core.Collectors;
 
@@ -23,10 +23,11 @@ namespace LuaInliner.Core.Collectors;
 /// <param name="Parameters"></param>
 /// <param name="Body"></param>
 /// <param name="MaxReturnCount">Maximum number of values which the function returns</param>
-internal record InlineFunctionInfo(
+internal record class InlineFunctionInfo(
     LocalFunctionDeclarationStatementSyntax DeclarationNode,
     SeparatedSyntaxList<NamedParameterSyntax> Parameters,
     SyntaxList<StatementSyntax> Body,
+    ImmutableArray<ReturnStatementSyntax> Returns,
     int MaxReturnCount
 );
 
@@ -93,25 +94,24 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             // Get the return statement nodes for the current function.
             // We don't descent into inner functions since they contain returns
             // that are irrelevant to the outer function.
-            ImmutableArray<ReturnStatementSyntax> returnNodes = node.Body
-                .DescendantNodes(
-                    node =>
-                        node.Kind() switch
-                        {
-                            SyntaxKind.AnonymousFunctionExpression
-                            or SyntaxKind.LocalFunctionDeclarationStatement
-                            or SyntaxKind.FunctionDeclarationStatement
-                                => false,
-                            _ => true
-                        }
-                )
+            ImmutableArray<ReturnStatementSyntax> returnNodes = node.Body.DescendantNodes(node =>
+                node.Kind() switch
+                {
+                    SyntaxKind.AnonymousFunctionExpression
+                    or SyntaxKind.LocalFunctionDeclarationStatement
+                    or SyntaxKind.FunctionDeclarationStatement
+                        => false,
+                    _ => true
+                }
+            )
                 .Where(node => node.IsKind(SyntaxKind.ReturnStatement))
                 .Cast<ReturnStatementSyntax>()
                 .ToImmutableArray();
 
             int maxReturnCount = returnNodes.Max(node => node.Expressions.Count);
 
-            InlineFunctionInfo info = new(node, parameters, cleanFunctionBody, maxReturnCount);
+            InlineFunctionInfo info =
+                new(node, parameters, cleanFunctionBody, returnNodes, maxReturnCount);
 
             _functions.Add(info);
         }
@@ -188,8 +188,8 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             return Result.Err<SyntaxTrivia, Unit>(Unit.Default);
         }
 
-        SyntaxTrivia firstNonWhitespaceTrivia = trivias.FirstOrDefault(
-            trivia => !trivia.IsKind(SyntaxKind.WhitespaceTrivia)
+        SyntaxTrivia firstNonWhitespaceTrivia = trivias.FirstOrDefault(trivia =>
+            !trivia.IsKind(SyntaxKind.WhitespaceTrivia)
         );
 
         if (
