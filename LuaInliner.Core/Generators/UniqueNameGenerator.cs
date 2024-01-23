@@ -18,8 +18,9 @@ internal class UniqueNameGenerator
     private uint _nameId;
 
     /// <summary>
-    /// Generates a variable name that is unique with the scope specified
-    /// in the format of <c>{prefix}__{nameId}</c>.
+    /// Generates a variable name that is unique with the scope specified.
+    /// <br/><br/>
+    /// Variable name is in the format of <example><c>[PREFIX]__[NAME_ID]</c></example>。
     /// </summary>
     /// <param name="scope"></param>
     /// <param name="prefix"></param>
@@ -48,6 +49,11 @@ internal class UniqueNameGenerator
         throw new Exception($"Too many variables with name that starts with '{prefix}'");
     }
 
+    /// <summary>
+    /// Gets all the used variable names within the scope.
+    /// </summary>
+    /// <param name="scope"></param>
+    /// <returns></returns>
     public static HashSet<string> GetUsedVariableNames(IScope scope)
     {
         HashSet<string> usedNames = [];
