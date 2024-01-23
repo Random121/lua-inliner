@@ -4,6 +4,7 @@ using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
 using LuaInliner.Common;
 using LuaInliner.Core.Collectors;
+using LuaInliner.Core.Rewriters;
 
 namespace LuaInliner.Core;
 
@@ -82,7 +83,9 @@ public sealed class Inliner(
             }
         }
 
-        return Result.Ok<SyntaxNode, ImmutableArray<Diagnostic>>(root);
+        SyntaxNode rewritten = InlineRewriter.Rewrite(root, script, inlineCallInfo.Ok.Value);
+
+        return Result.Ok<SyntaxNode, ImmutableArray<Diagnostic>>(rewritten);
     }
 
     private bool ShouldErrorWithDiagnostics(IEnumerable<Diagnostic> diagnostics)

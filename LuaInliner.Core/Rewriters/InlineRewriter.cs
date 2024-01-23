@@ -79,7 +79,7 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
         {
             StatementSyntax statement = (StatementSyntax)Visit(originalStatement);
 
-            if (_inlineTaskLookup.TryGetValue(statement, out InlineTask? inlineTask))
+            if (_inlineTaskLookup.TryGetValue(originalStatement, out InlineTask? inlineTask))
             {
                 statements.AddRange(inlineTask.StatementsToAdd);
 
@@ -116,7 +116,7 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
 
         InlineFunctionInfo calledFunction = callInfo.CalledFunction;
 
-        SeparatedSyntaxList<ExpressionSyntax> neededArguments = GetNeededCallArguments(
+        SeparatedSyntaxList<ExpressionSyntax> neededArguments = GetActualCallArguments(
             arguments,
             calledFunction.Parameters.Count
         );
@@ -135,16 +135,66 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
             returnVariableNames.Add(name);
         }
 
+        SyntaxList<StatementSyntax> inlineBody = InlineExpansionBodyGenerator.Generate(
+            calledFunction,
+            neededArguments,
+            returnVariableNames
+        );
+
         InlineTask task = _inlineTaskLookup.GetOrCreate(parentStatement);
 
-        
+        task.StatementsToAdd.AddRange(inlineBody);
 
-        // TODO: implement
+        SyntaxNode parentNode = node.Parent!;
 
-        return default;
+        Debug.Assert(parentNode != null, "Parent node of function call is somehow null.");
+
+        // Handle the case where we can't have a return value
+        if (parentNode.IsKind(SyntaxKind.ExpressionStatement))
+        {
+            task.RemoveCallingStatement = true;
+
+            // Can return anything since the function call will be removed
+            // along with its parent statement later on
+            return node;
+        }
+
+        // Functions without a explicit return value implicitly returns nil
+        if (returnVariableNames.Count == 0)
+        {
+            return SyntaxConstants.NIL_LITERAL;
+        }
+
+        Console.WriteLine(parentNode.Kind());
+
+        bool shouldReturnMultiple = parentNode switch
+        {
+            EqualsValuesClauseSyntax parent => parent.Values.Last().Equals(node),
+            ExpressionListFunctionArgumentSyntax parent => parent.Expressions.Last().Equals(node),
+            UnkeyedTableFieldSyntax parent => ((TableConstructorExpressionSyntax)parent.Parent!).Fields.Last().Equals(node),
+            ReturnStatementSyntax parent => parent.Expressions.Last().Equals(node),
+        };
+
+        Console.WriteLine(shouldReturnMultiple);
+
+        if (parentNode.IsKind(SyntaxKind.EqualsValuesClause))
+        {
+            //Console.WriteLine(((EqualsValuesClauseSyntax)parentNode).Values);
+        }
+
+        return SyntaxFactory.IdentifierName(returnVariableNames.First()).WithTriviaFrom(node);
     }
 
-    private static SeparatedSyntaxList<ExpressionSyntax> GetNeededCallArguments(
+    /// <summary>
+    /// Gets the actual argument values that is passed into the function.
+    /// <br/><br/>
+    /// This means that if an argument value is missing in a position which expects one (has a corresponding parameter),
+    /// then the value will be made <c>nil</c>.
+    /// </summary>
+    /// <param name="arguments"></param>
+    /// <param name="parameterCount"></param>
+    /// <returns></returns>
+    private static SeparatedSyntaxList<ExpressionSyntax> GetActualCallArguments(
         SeparatedSyntaxList<ExpressionSyntax> arguments,
         int parameterCount
     )
@@ -162,10 +212,7 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
         if (argumentCount < parameterCount)
         {
             int numberOfNilsNeeded = parameterCount - argumentCount;
-            var nilExpressions = Enumerable.Repeat(
-                SyntaxFactory.LiteralExpression(SyntaxKind.NilLiteralExpression),
-                numberOfNilsNeeded
-            );
+            var nilExpressions = Enumerable.Repeat(SyntaxConstants.NIL_LITERAL, numberOfNilsNeeded);
 
             return SyntaxFactory.SeparatedList(arguments.AddRange(nilExpressions));
         }
@@ -174,6 +221,11 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
         return SyntaxFactory.SeparatedList(arguments.Take(parameterCount));
     }
 
+    /// <summary>
+    /// Gets the direct parent <see cref="StatementSyntax"/> of the current expression.
+    /// </summary>
+    /// <param name="node"></param>
+    /// <returns></returns>
     private static StatementSyntax GetParentStatementOfExpression(ExpressionSyntax node)
     {
         // We don't know the exact type of the parent statement, but we do
@@ -185,13 +237,17 @@ internal sealed class InlineRewriter : LuaSyntaxRewriter
             (Func<StatementSyntax, bool>)isParentStatement
         );
 
-        // This should never be null as an ExpressionSyntax should
-        // always be contained in a statement which then must also be in a statement list
         Debug.Assert(parentStatement is not null);
 
         return parentStatement;
     }
 
+    /// <summary>
+    /// Normalizes the arguments of a function call.
+    /// </summary>
+    /// <param name="argument"></param>
+    /// <returns></returns>
+    /// <exception cref="UnreachableException"></exception>
     private static SeparatedSyntaxList<ExpressionSyntax> NormalizeCallArgument(
         FunctionArgumentSyntax argument
     )
