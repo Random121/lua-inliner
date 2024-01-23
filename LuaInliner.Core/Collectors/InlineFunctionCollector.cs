@@ -94,24 +94,12 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             // Get the return statement nodes for the current function.
             // We don't descent into inner functions since they contain returns
             // that are irrelevant to the outer function.
-            ImmutableArray<ReturnStatementSyntax> returnNodes = node.Body.DescendantNodes(node =>
-                node.Kind() switch
-                {
-                    SyntaxKind.AnonymousFunctionExpression
-                    or SyntaxKind.LocalFunctionDeclarationStatement
-                    or SyntaxKind.FunctionDeclarationStatement
-                        => false,
-                    _ => true
-                }
-            )
-                .Where(node => node.IsKind(SyntaxKind.ReturnStatement))
-                .Cast<ReturnStatementSyntax>()
-                .ToImmutableArray();
+            ImmutableArray<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node.Body);
 
-            int maxReturnCount = returnNodes.Max(node => node.Expressions.Count);
+            int maxReturnCount = returns.Any() ? returns.Max(node => node.Expressions.Count) : 0;
 
             InlineFunctionInfo info =
-                new(node, parameters, cleanFunctionBody, returnNodes, maxReturnCount);
+                new(node, parameters, cleanFunctionBody, returns, maxReturnCount);
 
             _functions.Add(info);
         }
@@ -121,6 +109,28 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         }
 
         base.VisitLocalFunctionDeclarationStatement(node);
+    }
+
+    private static ImmutableArray<ReturnStatementSyntax> GetFunctionReturnStatements(
+        StatementListSyntax body
+    )
+    {
+        // We don't descent into inner functions since they contain returns
+        // that are irrelevant to the outer function.
+        static bool shouldDescend(SyntaxNode node) =>
+            node.Kind() switch
+            {
+                SyntaxKind.AnonymousFunctionExpression
+                or SyntaxKind.LocalFunctionDeclarationStatement
+                or SyntaxKind.FunctionDeclarationStatement
+                    => false,
+                _ => true
+            };
+
+        return body.DescendantNodes(shouldDescend)
+            .Where(node => node.IsKind(SyntaxKind.ReturnStatement))
+            .Cast<ReturnStatementSyntax>()
+            .ToImmutableArray();
     }
 
     private static SyntaxList<StatementSyntax> GetStatementsWithoutInlineDirective(
