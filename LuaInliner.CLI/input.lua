@@ -1,30 +1,26 @@
-﻿local function test1()
+﻿local function inlineMe()
+	--!!INLINE_FUNCTION
+
+	return 1, 2, 3
+end
+
+local function inlineNil()
 	--!!INLINE_FUNCTION
 end
 
+local test1 = inlineMe()
 
-local function test2()
---!!INLINE_FUNCTION
-end
+local test2 = 1, 2, inlineMe()
 
-local function test3()
-				--!!INLINE_FUNCTION
-end
+local test3 = 1, inlineMe(), 2
 
-local function test4()
+-- test4
+print(1, inlineMe(), 2)
 
-	--!!INLINE_FUNCTION
-end
+local test5 = {1, inlineMe(), 2}
 
+local test5 = {[0] = 1, inlineMe(), 2}
 
-local function test5()
-	end
-
-local function test6()
-	--!!INLINE_FUNCTION
-	--test
-	print("test")
-
-	--yeah
-	print("yeah")
+local function test7()
+	return 1, inlineMe(), 2
 end
