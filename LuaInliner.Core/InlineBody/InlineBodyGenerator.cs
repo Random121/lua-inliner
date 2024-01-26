@@ -1,20 +1,14 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Loretta.CodeAnalysis;
+﻿using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 using LuaInliner.Core.Collectors;
-using LuaInliner.Core.Rewriters;
 
-namespace LuaInliner.Core.Generators;
+namespace LuaInliner.Core.InlineBody;
 
 /// <summary>
 /// Generates the function body for the inline expansion.
 /// </summary>
-internal static class InlineExpansionBodyGenerator
+internal static partial class InlineBodyGenerator
 {
     public static SyntaxList<StatementSyntax> Generate(
         InlineFunctionInfo calledFunction,
@@ -25,7 +19,7 @@ internal static class InlineExpansionBodyGenerator
         StatementListSyntax functionBody = SyntaxFactory.StatementList(calledFunction.Body);
 
         StatementListSyntax returnReplacedBody = (StatementListSyntax)
-            InlineBodyReturnRewriter.Rewrite(functionBody, returnVariableNames);
+            ReturnRewriter.Rewrite(functionBody, returnVariableNames);
 
         StatementListSyntax bodyWithArguments = GenerateBodyWithArguments(
             returnReplacedBody,
@@ -79,7 +73,7 @@ internal static class InlineExpansionBodyGenerator
                 .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
 
         return SyntaxFactory.StatementList(
-            (StatementSyntax[])[parameterArgumentMapping, ..body.Statements]
+            (StatementSyntax[])[parameterArgumentMapping, .. body.Statements]
         );
     }
 

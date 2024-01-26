@@ -4,7 +4,7 @@ using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
 using LuaInliner.Common;
 using LuaInliner.Core.Collectors;
-using LuaInliner.Core.Rewriters;
+using LuaInliner.Core.Inlining;
 
 namespace LuaInliner.Core;
 
