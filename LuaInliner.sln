@@ -9,10 +9,11 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LuaInliner.Core", "LuaInlin
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{F3B654E2-0E4A-4891-B125-0D4B75F361A4}"
 	ProjectSection(SolutionItems) = preProject
+		ISSUES.md = ISSUES.md
 		README.md = README.md
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LuaInliner.Common", "LuaInliner.Common\LuaInliner.Common.csproj", "{321B7B67-213D-4A45-9A47-23849C89FA98}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LuaInliner.Common", "LuaInliner.Common\LuaInliner.Common.csproj", "{321B7B67-213D-4A45-9A47-23849C89FA98}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
