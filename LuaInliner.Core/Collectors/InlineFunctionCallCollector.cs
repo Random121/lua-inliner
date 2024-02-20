@@ -8,7 +8,7 @@ namespace LuaInliner.Core.Collectors;
 
 internal record class InlineFunctionCallInfo(
     InlineFunctionInfo CalledFunction,
-    FunctionCallExpressionSyntax CallExpression
+    FunctionCallExpressionSyntax CallExpressionNode
 );
 
 /// <summary>

@@ -94,6 +94,7 @@ internal static partial class InlineBodyGenerator
         /// <summary>
         /// Override this visit method so we don't visit inside this node
         /// since all the returns inside are irrelevant to the current function.
+        /// Since this is not a statement, it can't be handled inside of VisitList().
         /// </summary>
         /// <param name="node"></param>
         /// <returns></returns>

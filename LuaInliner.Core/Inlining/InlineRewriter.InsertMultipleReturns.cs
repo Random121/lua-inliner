@@ -31,8 +31,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
     }
 
-    public override 
-        ? VisitExpressionListFunctionArgument(
+    public override SyntaxNode? VisitExpressionListFunctionArgument(
         ExpressionListFunctionArgumentSyntax node
     )
     {

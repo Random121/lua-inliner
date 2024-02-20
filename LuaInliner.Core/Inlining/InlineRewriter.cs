@@ -13,7 +13,7 @@ namespace LuaInliner.Core.Inlining;
 /// <summary>
 /// Tasks to perform to inline a statement.<br/>
 /// </summary>
-internal partial record class InlineTask
+internal record class InlineTask
 {
     // We are using a record class rather than a record struct for this
     // since record classes are reference types and we need to mutate
@@ -72,7 +72,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     private InlineRewriter(Script script, ImmutableArray<InlineFunctionCallInfo> functionCallInfos)
     {
         _script = script;
-        _callInfoLookup = functionCallInfos.ToImmutableDictionary(info => info.CallExpression);
+        _callInfoLookup = functionCallInfos.ToImmutableDictionary(info => info.CallExpressionNode);
     }
 
     public override SyntaxList<TNode> VisitList<TNode>(SyntaxList<TNode> list)

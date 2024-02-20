@@ -21,7 +21,7 @@ internal static partial class InlineBodyGenerator
         StatementListSyntax returnReplacedBody = (StatementListSyntax)
             ReturnRewriter.Rewrite(functionBody, returnVariableNames);
 
-        StatementListSyntax bodyWithArguments = GenerateBodyWithArguments(
+        StatementListSyntax bodyWithArguments = GenerateBodyWithParameters(
             returnReplacedBody,
             calledFunction.Parameters,
             arguments
@@ -48,42 +48,42 @@ internal static partial class InlineBodyGenerator
     }
 
     /// <summary>
-    /// Generates the body of the function with the binding of parameters and arguments prepended.
+    /// Generates the body of the function with the initialized parameters prepended.
     /// </summary>
     /// <param name="body"></param>
     /// <param name="parameters"></param>
     /// <param name="arguments"></param>
     /// <returns></returns>
-    private static StatementListSyntax GenerateBodyWithArguments(
+    private static StatementListSyntax GenerateBodyWithParameters(
         StatementListSyntax body,
         SeparatedSyntaxList<NamedParameterSyntax> parameters,
         SeparatedSyntaxList<ExpressionSyntax> arguments
     )
     {
         // Special case, no parameters
-        // GenerateParameterArgumentMapping() expects at least one parameter
+        // GenerateInitializedParameters() expects at least one parameter
         if (parameters.Count == 0)
         {
             return SyntaxFactory.StatementList(body.Statements);
         }
 
-        LocalVariableDeclarationStatementSyntax parameterArgumentMapping =
-            GenerateParameterArgumentBinding(parameters, arguments)
+        LocalVariableDeclarationStatementSyntax initializedParameters =
+            GenerateInitializedParameters(parameters, arguments)
                 .NormalizeWhitespace()
                 .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
 
         return SyntaxFactory.StatementList(
-            (StatementSyntax[])[parameterArgumentMapping, .. body.Statements]
+            (StatementSyntax[])[initializedParameters, ..body.Statements]
         );
     }
 
     /// <summary>
-    /// Binds the argument values to the parameter names.
+    /// Generates parameters initialized with their corresponding argument
     /// </summary>
     /// <param name="parameters"></param>
     /// <param name="arguments"></param>
     /// <returns></returns>
-    private static LocalVariableDeclarationStatementSyntax GenerateParameterArgumentBinding(
+    private static LocalVariableDeclarationStatementSyntax GenerateInitializedParameters(
         SeparatedSyntaxList<NamedParameterSyntax> parameters,
         SeparatedSyntaxList<ExpressionSyntax> arguments
     )
