@@ -10,25 +10,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     {
         var visitedNode = (EqualsValuesClauseSyntax)base.VisitEqualsValuesClause(node)!;
 
-        bool handleMultipleReturns = _multipleReturnsTaskLookup.TryGetValue(
-            visitedNode,
-            out MultipleReturnsTask? multipleReturnsTask
-        );
-
-        if (!handleMultipleReturns || multipleReturnsTask == null)
-        {
-            return visitedNode;
-        }
-
-        SeparatedSyntaxList<ExpressionSyntax> oldValues = visitedNode.Values;
-        SeparatedSyntaxList<ExpressionSyntax> newValues = oldValues
-            .RemoveAt(oldValues.Count - 1)
-            .AddRange(multipleReturnsTask.ReturnIdentifierNames);
-
-        return visitedNode
-            .WithValues(newValues)
-            .NormalizeWhitespace()
-            .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
+        return GetNodeWithAddedReturns(visitedNode, visitedNode.Values, visitedNode.WithValues);
     }
 
     public override SyntaxNode? VisitExpressionListFunctionArgument(
@@ -38,25 +20,22 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         var visitedNode = (ExpressionListFunctionArgumentSyntax)
             base.VisitExpressionListFunctionArgument(node)!;
 
-        bool handleMultipleReturns = _multipleReturnsTaskLookup.TryGetValue(
+        return GetNodeWithAddedReturns(
             visitedNode,
-            out MultipleReturnsTask? multipleReturnsTask
+            visitedNode.Expressions,
+            visitedNode.WithExpressions
         );
+    }
 
-        if (!handleMultipleReturns || multipleReturnsTask == null)
-        {
-            return visitedNode;
-        }
+    public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
+    {
+        var visitedNode = (ReturnStatementSyntax)base.VisitReturnStatement(node)!;
 
-        SeparatedSyntaxList<ExpressionSyntax> oldValues = visitedNode.Expressions;
-        SeparatedSyntaxList<ExpressionSyntax> newValues = oldValues
-            .RemoveAt(oldValues.Count - 1)
-            .AddRange(multipleReturnsTask.ReturnIdentifierNames);
-
-        return visitedNode
-            .WithExpressions(newValues)
-            .NormalizeWhitespace()
-            .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
+        return GetNodeWithAddedReturns(
+            visitedNode,
+            visitedNode.Expressions,
+            visitedNode.WithExpressions
+        );
     }
 
     public override SyntaxNode? VisitTableConstructorExpression(
@@ -66,12 +45,15 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         var visitedNode = (TableConstructorExpressionSyntax)
             base.VisitTableConstructorExpression(node)!;
 
-        bool handleMultipleReturns = _multipleReturnsTaskLookup.TryGetValue(
+        // Hacky code below since table nodes are structured differently from the other
+        // "expression list" like nodes
+
+        bool handleMultipleReturns = _multipleReturnsEditsLookup.TryGetValue(
             visitedNode,
-            out MultipleReturnsTask? multipleReturnsTask
+            out MultipleReturnsEdits? multipleReturnsEdits
         );
 
-        if (!handleMultipleReturns || multipleReturnsTask == null)
+        if (!handleMultipleReturns || multipleReturnsEdits is null)
         {
             return visitedNode;
         }
@@ -79,7 +61,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         SeparatedSyntaxList<TableFieldSyntax> oldValues = visitedNode.Fields;
 
         IEnumerable<UnkeyedTableFieldSyntax> identifierFields =
-            multipleReturnsTask.ReturnIdentifierNames.Select(SyntaxFactory.UnkeyedTableField);
+            multipleReturnsEdits.ReturnIdentifierNames.Select(SyntaxFactory.UnkeyedTableField);
 
         SeparatedSyntaxList<TableFieldSyntax> newValues = oldValues
             .RemoveAt(oldValues.Count - 1)
@@ -91,27 +73,30 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
     }
 
-    public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
+    private TNode GetNodeWithAddedReturns<TNode>(
+        TNode node,
+        SeparatedSyntaxList<ExpressionSyntax> oldValues,
+        Func<SeparatedSyntaxList<ExpressionSyntax>, TNode> replaceValuesFunc
+    )
+        where TNode : SyntaxNode
     {
-        var visitedNode = (ReturnStatementSyntax)base.VisitReturnStatement(node)!;
-
-        bool handleMultipleReturns = _multipleReturnsTaskLookup.TryGetValue(
-            visitedNode,
-            out MultipleReturnsTask? multipleReturnsTask
+        bool handleMultipleReturns = _multipleReturnsEditsLookup.TryGetValue(
+            node,
+            out MultipleReturnsEdits? multipleReturnsEdits
         );
 
-        if (!handleMultipleReturns || multipleReturnsTask == null)
+        if (!handleMultipleReturns || multipleReturnsEdits is null)
         {
-            return visitedNode;
+            return node;
         }
 
-        SeparatedSyntaxList<ExpressionSyntax> oldValues = visitedNode.Expressions;
+        IList<IdentifierNameSyntax> returnIdentifiers = multipleReturnsEdits.ReturnIdentifierNames;
+
         SeparatedSyntaxList<ExpressionSyntax> newValues = oldValues
             .RemoveAt(oldValues.Count - 1)
-            .AddRange(multipleReturnsTask.ReturnIdentifierNames);
+            .AddRange(returnIdentifiers);
 
-        return visitedNode
-            .WithExpressions(newValues)
+        return replaceValuesFunc(newValues)
             .NormalizeWhitespace()
             .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
     }
