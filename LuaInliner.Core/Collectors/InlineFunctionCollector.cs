@@ -1,9 +1,9 @@
-﻿using Loretta.CodeAnalysis;
+﻿using System.Collections.Immutable;
+using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 using LuaInliner.Common;
 using LuaInliner.Core.Extensions;
-using System.Collections.Immutable;
 
 namespace LuaInliner.Core.Collectors;
 
@@ -18,7 +18,7 @@ internal record class InlineFunctionInfo(
     LocalFunctionDeclarationStatementSyntax DeclarationNode,
     SeparatedSyntaxList<NamedParameterSyntax> Parameters,
     SyntaxList<StatementSyntax> Body,
-    ImmutableArray<ReturnStatementSyntax> Returns,
+    IList<ReturnStatementSyntax> Returns,
     int MaxReturnCount
 );
 
@@ -27,29 +27,20 @@ internal record class InlineFunctionInfo(
 /// </summary>
 internal sealed class InlineFunctionCollector : LuaSyntaxWalker
 {
-    public static Result<ImmutableArray<InlineFunctionInfo>, ImmutableArray<Diagnostic>> Collect(
-        SyntaxNode node
-    )
+    public static Result<IList<InlineFunctionInfo>, IList<Diagnostic>> Collect(SyntaxNode node)
     {
         InlineFunctionCollector collector = new();
         collector.Visit(node);
 
-        ImmutableArray<Diagnostic> diagnostics = collector._diagnostics.ToImmutableArray();
+        List<Diagnostic> diagnostics = collector._diagnostics;
 
-        return diagnostics.Any()
-            ? Result.Err<ImmutableArray<InlineFunctionInfo>, ImmutableArray<Diagnostic>>(
-                diagnostics
-            )
-            : Result.Ok<ImmutableArray<InlineFunctionInfo>, ImmutableArray<Diagnostic>>(
-                collector._functions.ToImmutableArray()
-            );
+        return diagnostics.Count != 0
+            ? Result.Err<IList<InlineFunctionInfo>, IList<Diagnostic>>(diagnostics)
+            : Result.Ok<IList<InlineFunctionInfo>, IList<Diagnostic>>(collector._functions);
     }
 
-    private readonly ImmutableArray<InlineFunctionInfo>.Builder _functions =
-        ImmutableArray.CreateBuilder<InlineFunctionInfo>();
-
-    private readonly ImmutableArray<Diagnostic>.Builder _diagnostics =
-        ImmutableArray.CreateBuilder<Diagnostic>();
+    private readonly List<InlineFunctionInfo> _functions = [];
+    private readonly List<Diagnostic> _diagnostics = [];
 
     private InlineFunctionCollector()
         : base(SyntaxWalkerDepth.Node) { }
@@ -85,14 +76,14 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             // Get the return statement nodes for the current function.
             // We don't descent into inner functions since they contain returns
             // that are irrelevant to the outer function.
-            ImmutableArray<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node.Body);
+            IList<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node.Body);
 
             int maxReturnCount = returns.Any() ? returns.Max(node => node.Expressions.Count) : 0;
 
-            InlineFunctionInfo info =
+            InlineFunctionInfo inlineFunctionInfo =
                 new(node, parameters, cleanFunctionBody, returns, maxReturnCount);
 
-            _functions.Add(info);
+            _functions.Add(inlineFunctionInfo);
         }
         else
         {
@@ -102,7 +93,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         base.VisitLocalFunctionDeclarationStatement(node);
     }
 
-    private static ImmutableArray<ReturnStatementSyntax> GetFunctionReturnStatements(
+    private static IList<ReturnStatementSyntax> GetFunctionReturnStatements(
         StatementListSyntax body
     )
     {
@@ -164,9 +155,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
 
         // Since we already did checking for vararg parameters, we guarantee all the parameters are of the right type,
         // so force cast all elements.
-        ImmutableArray<NamedParameterSyntax> namedParameters = parameters
-            .Cast<NamedParameterSyntax>()
-            .ToImmutableArray();
+        IEnumerable<NamedParameterSyntax> namedParameters = parameters.Cast<NamedParameterSyntax>();
 
         return Result.Ok<SeparatedSyntaxList<NamedParameterSyntax>, Diagnostic>(
             SyntaxFactory.SeparatedList(namedParameters)

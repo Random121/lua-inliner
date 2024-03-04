@@ -8,22 +8,19 @@ using LuaInliner.Core.Inlining;
 
 namespace LuaInliner.Core;
 
+/// <summary>
+/// Lua inliner
+/// </summary>
+/// <param name="luaParseOptions"></param>
+/// <param name="minimumErrorSeverity">Minimum severity encountered during parsing before an error is thrown.</param>
 public sealed class Inliner(
     LuaParseOptions luaParseOptions,
-    DiagnosticSeverity errorOnSeverity = DiagnosticSeverity.Error
+    DiagnosticSeverity minimumErrorSeverity = DiagnosticSeverity.Error
 )
 {
-    private readonly LuaParseOptions _luaParseOptions = luaParseOptions;
-
-    /// <summary>
-    /// Minimum severity encountered during parsing before an error
-    /// is thrown.
-    /// </summary>
-    private readonly DiagnosticSeverity _errorOnSeverity = errorOnSeverity;
-
-    public Result<SyntaxNode, ImmutableArray<Diagnostic>> InlineFile(SourceText source)
+    public Result<SyntaxNode, IList<Diagnostic>> InlineFile(SourceText source)
     {
-        SyntaxTree tree = LuaSyntaxTree.ParseText(source, _luaParseOptions);
+        SyntaxTree tree = LuaSyntaxTree.ParseText(source, luaParseOptions);
 
         List<Diagnostic> diagnostics = [];
 
@@ -36,60 +33,58 @@ public sealed class Inliner(
 
             if (ShouldErrorWithDiagnostics(parseDiagnostics))
             {
-                return Result.Err<SyntaxNode, ImmutableArray<Diagnostic>>(
-                    diagnostics.ToImmutableArray()
-                );
+                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
             }
         }
 
         SyntaxNode root = tree.GetRoot();
         Script script = new([tree]);
 
-        var inlineFunctionInfos = InlineFunctionCollector.Collect(root);
+        var inlineFunctionInfoList = InlineFunctionCollector.Collect(root);
 
-        if (inlineFunctionInfos.IsErr)
+        if (inlineFunctionInfoList.IsErr)
         {
-            var IFIDiagnostics = inlineFunctionInfos.Err.Value;
+            var functionInfoDiagnostics = inlineFunctionInfoList.Err.Value;
 
             // Add current diagnostics
-            diagnostics.AddRange(IFIDiagnostics);
+            diagnostics.AddRange(functionInfoDiagnostics);
 
-            if (ShouldErrorWithDiagnostics(IFIDiagnostics))
+            if (ShouldErrorWithDiagnostics(functionInfoDiagnostics))
             {
-                return Result.Err<SyntaxNode, ImmutableArray<Diagnostic>>(
-                    diagnostics.ToImmutableArray()
-                );
+                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
             }
         }
 
-        var inlineCallInfo = InlineFunctionCallCollector.Collect(
+        var inlineFunctionCallInfoList = InlineFunctionCallCollector.Collect(
             root,
             script,
-            inlineFunctionInfos.Ok.Value
+            inlineFunctionInfoList.Ok.Value
         );
 
-        if (inlineCallInfo.IsErr)
+        if (inlineFunctionCallInfoList.IsErr)
         {
-            var ICIDiagnostics = inlineFunctionInfos.Err.Value;
+            var callInfoDiagnostics = inlineFunctionInfoList.Err.Value;
 
             // Add current diagnostics
-            diagnostics.AddRange(ICIDiagnostics);
+            diagnostics.AddRange(callInfoDiagnostics);
 
-            if (ShouldErrorWithDiagnostics(ICIDiagnostics))
+            if (ShouldErrorWithDiagnostics(callInfoDiagnostics))
             {
-                return Result.Err<SyntaxNode, ImmutableArray<Diagnostic>>(
-                    diagnostics.ToImmutableArray()
-                );
+                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
             }
         }
 
-        SyntaxNode rewritten = InlineRewriter.Rewrite(root, script, inlineCallInfo.Ok.Value);
+        SyntaxNode rewritten = InlineRewriter.Rewrite(
+            root,
+            script,
+            inlineFunctionCallInfoList.Ok.Value
+        );
 
-        return Result.Ok<SyntaxNode, ImmutableArray<Diagnostic>>(rewritten);
+        return Result.Ok<SyntaxNode, IList<Diagnostic>>(rewritten);
     }
 
     private bool ShouldErrorWithDiagnostics(IEnumerable<Diagnostic> diagnostics)
     {
-        return diagnostics.Any(diagnostic => diagnostic.Severity >= _errorOnSeverity);
+        return diagnostics.Any(diagnostic => diagnostic.Severity >= minimumErrorSeverity);
     }
 }

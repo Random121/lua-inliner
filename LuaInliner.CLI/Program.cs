@@ -30,11 +30,11 @@ internal static class Program
         LuaParseOptions luaParseOptions = new(LuaSyntaxOptions.Luau);
         Inliner inliner = new(luaParseOptions);
 
-        Result<SyntaxNode, ImmutableArray<Diagnostic>> inlineResult = inliner.InlineFile(fileSourceText);
+        Result<SyntaxNode, IList<Diagnostic>> inlineResult = inliner.InlineFile(fileSourceText);
 
         if (inlineResult.IsErr)
         {
-            ImmutableArray<Diagnostic> diagnostics = inlineResult.Err.Value;
+            IList<Diagnostic> diagnostics = inlineResult.Err.Value;
 
             Console.Error.WriteLine("Found errors while inlining:");
 

@@ -1,8 +1,10 @@
-﻿using Loretta.CodeAnalysis;
+﻿using System.Collections;
+using System.Collections.Immutable;
+using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 using LuaInliner.Common;
-using System.Collections.Immutable;
+using LuaInliner.Core.Extensions;
 
 namespace LuaInliner.Core.Collectors;
 
@@ -16,30 +18,24 @@ internal record class InlineFunctionCallInfo(
 /// </summary>
 internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
 {
-    public static Result<
-        ImmutableArray<InlineFunctionCallInfo>,
-        ImmutableArray<Diagnostic>
-    > Collect(SyntaxNode node, Script script, ImmutableArray<InlineFunctionInfo> inlineFunctionInfo)
+    public static Result<IList<InlineFunctionCallInfo>, IList<Diagnostic>> Collect(
+        SyntaxNode node,
+        Script script,
+        IList<InlineFunctionInfo> inlineFunctionInfo
+    )
     {
         InlineFunctionCallCollector collector = new(script, inlineFunctionInfo);
         collector.Visit(node);
 
-        ImmutableArray<Diagnostic> diagnostics = collector._diagnostics.ToImmutableArray();
+        List<Diagnostic> diagnostics = collector._diagnostics;
 
-        return diagnostics.Any()
-            ? Result.Err<ImmutableArray<InlineFunctionCallInfo>, ImmutableArray<Diagnostic>>(
-                diagnostics
-            )
-            : Result.Ok<ImmutableArray<InlineFunctionCallInfo>, ImmutableArray<Diagnostic>>(
-                collector._calls.ToImmutableArray()
-            );
+        return diagnostics.Count != 0
+            ? Result.Err<IList<InlineFunctionCallInfo>, IList<Diagnostic>>(diagnostics)
+            : Result.Ok<IList<InlineFunctionCallInfo>, IList<Diagnostic>>(collector._calls);
     }
 
-    private readonly ImmutableArray<InlineFunctionCallInfo>.Builder _calls =
-        ImmutableArray.CreateBuilder<InlineFunctionCallInfo>();
-
-    private readonly ImmutableArray<Diagnostic>.Builder _diagnostics =
-        ImmutableArray.CreateBuilder<Diagnostic>();
+    private readonly List<InlineFunctionCallInfo> _calls = [];
+    private readonly List<Diagnostic> _diagnostics = [];
 
     private readonly Script _script;
 
@@ -49,17 +45,14 @@ internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
     private readonly ImmutableDictionary<
         LocalFunctionDeclarationStatementSyntax,
         InlineFunctionInfo
-    > _inlineFunctionInfoMapping;
+    > _functionInfoLookup;
 
-    private InlineFunctionCallCollector(
-        Script script,
-        ImmutableArray<InlineFunctionInfo> inlineFunctionInfo
-    )
+    private InlineFunctionCallCollector(Script script, IList<InlineFunctionInfo> inlineFunctionInfo)
         : base(SyntaxWalkerDepth.Node)
     {
         _script = script;
-        _inlineFunctionInfoMapping = inlineFunctionInfo.ToImmutableDictionary(
-            funcInfo => funcInfo.DeclarationNode
+        _functionInfoLookup = inlineFunctionInfo.ToImmutableDictionary(functionInfo =>
+            functionInfo.DeclarationNode
         );
     }
 
@@ -103,20 +96,21 @@ internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
             return;
         }
 
-        InlineFunctionInfo? inlineFunctionInfo = _inlineFunctionInfoMapping.GetValueOrDefault(
-            (LocalFunctionDeclarationStatementSyntax)calledFunctionDeclaration
+        bool isInlineFunctionCall = _functionInfoLookup.TryGetValue(
+            (LocalFunctionDeclarationStatementSyntax)calledFunctionDeclaration,
+            out InlineFunctionInfo? inlineFunctionInfo
         );
 
         // Not a call to an inline function
-        if (inlineFunctionInfo is null)
+        if (!isInlineFunctionCall || inlineFunctionInfo is null)
         {
             base.VisitFunctionCallExpression(node);
             return;
         }
 
-        InlineFunctionCallInfo callInfo = new(inlineFunctionInfo, node);
+        InlineFunctionCallInfo inlineFunctionCallInfo = new(inlineFunctionInfo, node);
 
-        _calls.Add(callInfo);
+        _calls.Add(inlineFunctionCallInfo);
 
         base.VisitFunctionCallExpression(node);
     }

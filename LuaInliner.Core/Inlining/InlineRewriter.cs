@@ -11,9 +11,9 @@ using LuaInliner.Core.Naming;
 namespace LuaInliner.Core.Inlining;
 
 /// <summary>
-/// Tasks to perform to inline a statement.<br/>
+/// Edits to perform on the AST to inline a statement.
 /// </summary>
-internal record class InlineTask
+internal record class InliningEdits
 {
     // We are using a record class rather than a record struct for this
     // since record classes are reference types and we need to mutate
@@ -21,21 +21,22 @@ internal record class InlineTask
     // (without creating a copy like in the case with record structs).
 
     /// <summary>
-    /// Inline results to be added in front of the current statement.
+    /// Statements to be inserted in front of the current statement.
     /// </summary>
-    public List<StatementSyntax> StatementsToAdd = [];
+    public List<StatementSyntax> Insertions = [];
 
     /// <summary>
-    /// Whether the calling statement should be removed if it doesn't need a return value.
+    /// Whether the calling statement should be removed.<br/>
+    /// This is usually used if the calling statement doesn't have a return value.
     /// </summary>
-    public bool RemoveCallingStatement;
+    public bool RemoveCallingStatement = false;
 }
 
 /// <summary>
-/// Task to insert multiple returns.
+/// Edits to perform on the AST to support multiple returns from inline functions.
 /// </summary>
 /// <param name="ReturnIdentifierNames"></param>
-internal record class MultipleReturnsTask(
+internal record class MultipleReturnsEdits(
     ImmutableArray<IdentifierNameSyntax> ReturnIdentifierNames
 );
 
@@ -44,7 +45,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     public static SyntaxNode Rewrite(
         SyntaxNode node,
         Script script,
-        ImmutableArray<InlineFunctionCallInfo> functionCallInfos
+        IList<InlineFunctionCallInfo> functionCallInfos
     )
     {
         InlineRewriter rewriter = new(script, functionCallInfos);
@@ -52,6 +53,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     }
 
     private readonly Script _script;
+
     private readonly ImmutableDictionary<
         FunctionCallExpressionSyntax,
         InlineFunctionCallInfo
@@ -60,16 +62,16 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     private readonly UniqueNameGenerator _nameGenerator = new();
 
     /// <summary>
-    /// Mapping between a statement that is being inlined and the tasks that need to be performed.
+    /// Mapping between a statement that is being inlined and the edits that need to be performed.
     /// </summary>
-    private readonly Dictionary<StatementSyntax, InlineTask> _inlineTaskLookup = [];
+    private readonly Dictionary<StatementSyntax, InliningEdits> _inliningEditsLookup = [];
 
     /// <summary>
-    /// Key is the node which contains the return.
+    /// Lookup for the edits needed using the node which contains the return.
     /// </summary>
-    public Dictionary<SyntaxNode, MultipleReturnsTask> _multipleReturnsTaskLookup = [];
+    public readonly Dictionary<SyntaxNode, MultipleReturnsEdits> _multipleReturnsEditsLookup = [];
 
-    private InlineRewriter(Script script, ImmutableArray<InlineFunctionCallInfo> functionCallInfos)
+    private InlineRewriter(Script script, IList<InlineFunctionCallInfo> functionCallInfos)
     {
         _script = script;
         _callInfoLookup = functionCallInfos.ToImmutableDictionary(info => info.CallExpressionNode);
@@ -88,14 +90,11 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         {
             StatementSyntax statement = (StatementSyntax)Visit(originalStatement);
 
-            if (_inlineTaskLookup.TryGetValue(originalStatement, out InlineTask? inlineTask))
+            if (_inliningEditsLookup.TryGetValue(originalStatement, out InliningEdits? edits))
             {
-                statements.AddRange(inlineTask.StatementsToAdd);
+                statements.AddRange(edits.Insertions);
 
-                // This is an ExpressionStatement, so we remove it since it doesn't
-                // use the returns and would cause an error in the Lua script
-                // if it is left in.
-                if (inlineTask.RemoveCallingStatement)
+                if (edits.RemoveCallingStatement)
                 {
                     continue;
                 }
@@ -111,15 +110,14 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     {
         bool isInlineCall = _callInfoLookup.TryGetValue(node, out InlineFunctionCallInfo? callInfo);
 
-        if (!isInlineCall || callInfo == null)
+        if (!isInlineCall || callInfo is null)
         {
             return base.VisitFunctionCallExpression(node);
         }
 
-        // Visit arguments first to handle nested inline function calls,
-        // innermost calls must be inlined before outer calls (returns from inner calls
-        // are needed to inline the outer calls).
-        SeparatedSyntaxList<ExpressionSyntax> arguments = NormalizeCallArgument(
+        // Visit (or inline) arguments first to handle nested inline function calls
+        // as the returns from inner calls are needed to inline the outer calls
+        SeparatedSyntaxList<ExpressionSyntax> arguments = GetNormalizedCallArgument(
             (FunctionArgumentSyntax)Visit(node.Argument)
         );
 
@@ -127,76 +125,95 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         StatementSyntax parentStatement = GetParentStatementOfExpression(node);
         IScope currentScope = _script.GetScope(node)!;
 
-        SeparatedSyntaxList<ExpressionSyntax> neededArguments = GetActualCallArguments(
+        SeparatedSyntaxList<ExpressionSyntax> argumentValues = GetActualArgumentValues(
             arguments,
             calledFunction.Parameters.Count
         );
 
-        List<string> returnVariableNames = new(calledFunction.MaxReturnCount);
+        List<string> returnVariableNames = GenerateReturnVariableNames(
+            calledFunction.MaxReturnCount,
+            currentScope
+        );
 
-        for (int i = 0; i < calledFunction.MaxReturnCount; i++)
-        {
-            // TODO: Make this more performant since it is retrieving the
-            // used variable names every iteration
-            string name = _nameGenerator.GetUniqueName(currentScope, "__inline_return");
+        ImmutableArray<IdentifierNameSyntax> returnVariableIdentifiers = returnVariableNames
+            .Select(SyntaxFactory.IdentifierName)
+            .ToImmutableArray();
 
-            returnVariableNames.Add(name);
-        }
-
-        SyntaxList<StatementSyntax> inlineBody = InlineBodyGenerator.Generate(
+        SyntaxList<StatementSyntax> inlineFunctionBody = InlineBodyGenerator.Generate(
             calledFunction,
-            neededArguments,
+            argumentValues,
             returnVariableNames
         );
 
-        InlineTask inlineTask = _inlineTaskLookup.GetOrCreate(parentStatement);
-
-        inlineTask.StatementsToAdd.AddRange(inlineBody);
-
+        InliningEdits inliningEdits = _inliningEditsLookup.GetOrCreate(parentStatement);
         SyntaxNode parentNode = node.Parent!;
 
-        Debug.Assert(parentNode != null, "Parent node of function call is somehow null.");
+        Debug.Assert(parentNode is not null, "Function call node does not have a parent");
 
-        // Handle the case where we can't have a return value
+        inliningEdits.Insertions.AddRange(inlineFunctionBody);
+
+        // We have to remove this node if it is an ExpressionStatement since the return values
+        // are not used and would cause an error in the Lua script if it is left in.
         if (parentNode.IsKind(SyntaxKind.ExpressionStatement))
         {
-            inlineTask.RemoveCallingStatement = true;
+            inliningEdits.RemoveCallingStatement = true;
 
-            // Can return anything since the function call will be removed
-            // along with its parent statement later on
+            // Can return anything since it will be removed later on
             return node;
         }
 
         // Functions without a explicit return value implicitly returns nil
+        // (this isn't true in all cases but it is a good enough substitute)
         if (returnVariableNames.Count == 0)
         {
             return SyntaxConstants.NIL_LITERAL;
         }
 
-        ImmutableArray<IdentifierNameSyntax> returnIdentifierNames = returnVariableNames
-            .Select(SyntaxFactory.IdentifierName)
-            .ToImmutableArray();
-
         if (ShouldReturnAllValues(node))
         {
-            MultipleReturnsTask multipleReturnsTask = new(returnIdentifierNames);
+            MultipleReturnsEdits multipleReturnEdits = new(returnVariableIdentifiers);
 
-            SyntaxNode returnContainingNode = parentNode.IsKind(SyntaxKind.UnkeyedTableField)
+            SyntaxNode returnValueContainingNode = parentNode.IsKind(SyntaxKind.UnkeyedTableField)
                 ? parentNode.Parent!
                 : parentNode;
 
-            _multipleReturnsTaskLookup.Add(returnContainingNode, multipleReturnsTask);
+            _multipleReturnsEditsLookup.Add(returnValueContainingNode, multipleReturnEdits);
 
             return node;
         }
 
-        return returnIdentifierNames[0].WithTriviaFrom(node);
+        // Only insert the first return value
+        return returnVariableIdentifiers[0].WithTriviaFrom(node);
     }
 
     /// <summary>
-    /// Determines whether the current call should return all of its values.
+    /// Generates a list of return variable names that are unique to the current scope.
+    /// </summary>
+    /// <param name="maxReturnCount"></param>
+    /// <param name="scope"></param>
+    /// <returns></returns>
+    private List<string> GenerateReturnVariableNames(int maxReturnCount, IScope scope)
+    {
+        const string RETURN_VARIABLE_NAME_PREFIX = "__inline_return";
+
+        List<string> returnVariableNames = new(maxReturnCount);
+
+        for (int i = 0; i < maxReturnCount; i++)
+        {
+            // TODO: Make this more performant since it is retrieving the
+            // used variable names for the scope every iteration
+            string name = _nameGenerator.GetUniqueName(scope, RETURN_VARIABLE_NAME_PREFIX);
+
+            returnVariableNames.Add(name);
+        }
+
+        return returnVariableNames;
+    }
+
+    /// <summary>
+    /// Returns whether a function call should return all of its return values.
     /// <br/><br/>
-    /// The only scenario where we have the function return all of its values is when it is
+    /// The only scenario where a function call would return all of its return values is when it is
     /// last in a list of expressions.
     /// </summary>
     /// <param name="call">Function call node</param>
@@ -205,7 +222,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     {
         SyntaxNode parentNode = call.Parent!;
 
-        // Table values are constructed differently from the other "expression list" style nodes
+        // Table values are structured differently from the other "expression list" like nodes
         if (parentNode.IsKind(SyntaxKind.UnkeyedTableField))
         {
             var tableExpression = (TableConstructorExpressionSyntax)parentNode.Parent!;
@@ -213,7 +230,6 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             return tableExpression.Fields.Last().Equals(parentNode);
         }
 
-        // List of expressions which will contain the return values
         SeparatedSyntaxList<SyntaxNode>? containingExpressionList = parentNode switch
         {
             EqualsValuesClauseSyntax parent => parent.Values,
@@ -222,6 +238,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             _ => null,
         };
 
+        // Function call is not in an expression list
         if (!containingExpressionList.HasValue)
         {
             return false;
@@ -233,13 +250,12 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     /// <summary>
     /// Gets the actual argument values that is passed into the function.
     /// <br/><br/>
-    /// This means that if an argument value is missing in a position which expects one (has a corresponding parameter),
-    /// then the value will be made <c>nil</c>.
+    /// If a parameter isn't given a corresponding argument value, it will be given <c>nil</c> instead.
     /// </summary>
     /// <param name="arguments"></param>
     /// <param name="parameterCount"></param>
     /// <returns></returns>
-    private static SeparatedSyntaxList<ExpressionSyntax> GetActualCallArguments(
+    private static SeparatedSyntaxList<ExpressionSyntax> GetActualArgumentValues(
         SeparatedSyntaxList<ExpressionSyntax> arguments,
         int parameterCount
     )
@@ -253,7 +269,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         int argumentCount = arguments.Count;
 
         // If a parameter does not have a corresponding argument value
-        // when the function is called, it will be nil.
+        // when the function is called, it will be initialized with nil
         if (argumentCount < parameterCount)
         {
             int numberOfNilsNeeded = parameterCount - argumentCount;
@@ -267,7 +283,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     }
 
     /// <summary>
-    /// Gets the direct parent <see cref="StatementSyntax"/> of the current expression.
+    /// Gets the direct parent of the current expression that is of type <see cref="StatementSyntax"/>.
     /// </summary>
     /// <param name="node"></param>
     /// <returns></returns>
@@ -282,18 +298,18 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             (Func<StatementSyntax, bool>)isParentStatement
         );
 
-        Debug.Assert(parentStatement is not null);
+        Debug.Assert(parentStatement is not null, "Expression is not contained within a statement");
 
         return parentStatement;
     }
 
     /// <summary>
-    /// Normalizes the arguments of a function call.
+    /// Normalizes the arguments of a function call to be a list of expressions.
     /// </summary>
     /// <param name="argument"></param>
     /// <returns></returns>
     /// <exception cref="UnreachableException"></exception>
-    private static SeparatedSyntaxList<ExpressionSyntax> NormalizeCallArgument(
+    private static SeparatedSyntaxList<ExpressionSyntax> GetNormalizedCallArgument(
         FunctionArgumentSyntax argument
     )
     {
@@ -308,7 +324,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
                 => SyntaxFactory.SeparatedList<ExpressionSyntax>(
                     ImmutableArray.Create(arg.TableConstructor)
                 ),
-            _ => throw new UnreachableException("Impossible function call argument type")
+            _ => throw new UnreachableException("Unknown function call argument type")
         };
     }
 }

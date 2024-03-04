@@ -27,7 +27,7 @@ internal static class DictionaryExtension
     {
         bool exists = dictionary.TryGetValue(key, out TValue? ret);
 
-        if (!exists || ret == null)
+        if (!exists || ret is null)
         {
             ret = new TValue();
             dictionary[key] = ret;

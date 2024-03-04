@@ -1,4 +1,5 @@
-﻿using Loretta.CodeAnalysis;
+﻿using System.Collections.Immutable;
+using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 
@@ -11,17 +12,20 @@ internal static partial class InlineBodyGenerator
     /// </summary>
     private sealed class ReturnRewriter : LuaSyntaxRewriter
     {
-        public static SyntaxNode Rewrite(SyntaxNode node, List<string> returnVariableNames)
+        public static SyntaxNode Rewrite(SyntaxNode node, IList<string> returnVariableNames)
         {
             ReturnRewriter rewriter = new(returnVariableNames);
             return rewriter.Visit(node);
         }
 
-        private readonly List<string> _returnVariableNames;
+        private readonly ImmutableArray<PrefixExpressionSyntax> _returnVariableIdentifiers;
 
-        private ReturnRewriter(List<string> returnVariableNames)
+        private ReturnRewriter(IList<string> returnVariableNames)
         {
-            _returnVariableNames = returnVariableNames;
+            _returnVariableIdentifiers = returnVariableNames
+                .Select(SyntaxFactory.IdentifierName)
+                .Cast<PrefixExpressionSyntax>()
+                .ToImmutableArray();
         }
 
         public override SyntaxList<TNode> VisitList<TNode>(SyntaxList<TNode> list)
@@ -43,8 +47,8 @@ internal static partial class InlineBodyGenerator
                     _ => false
                 };
 
-                // We don't visit inside this node since all the returns inside are irrelevant
-                // to the current function.
+                // We don't visit inside function declaration nodes since all
+                // the returns inside are irrelevant to the current function
                 if (isFunctionDeclaration)
                 {
                     statements.Add(originalStatement);
@@ -59,30 +63,21 @@ internal static partial class InlineBodyGenerator
                     continue;
                 }
 
-                SeparatedSyntaxList<ExpressionSyntax> returnValues = (
-                    (ReturnStatementSyntax)statement
-                ).Expressions;
+                ReturnStatementSyntax returnStatement = (ReturnStatementSyntax)statement;
+                SeparatedSyntaxList<ExpressionSyntax> returnValues = returnStatement.Expressions;
 
-                // Note that for the .Take() we can trust that there is always
-                // enough return variable names since (if the InlineRewriter is working correctly)
-                // the number of variable names we generate matches the max number of values returned.
-                SeparatedSyntaxList<PrefixExpressionSyntax> returnVariableIdentifiers =
-                    SyntaxFactory.SeparatedList(
-                        _returnVariableNames
-                            .Take(returnValues.Count)
-                            .Select(SyntaxFactory.IdentifierName)
-                            .Cast<PrefixExpressionSyntax>()
-                    );
+                IEnumerable<PrefixExpressionSyntax> neededReturnIdentifiers =
+                    _returnVariableIdentifiers.Take(returnValues.Count);
 
                 AssignmentStatementSyntax assignment = SyntaxFactory.AssignmentStatement(
-                    returnVariableIdentifiers,
+                    SyntaxFactory.SeparatedList(neededReturnIdentifiers),
                     returnValues
                 );
 
                 statements.Add(assignment);
 
-                // Emulate the normal control flow of a function when encountering a return
-                // (stopping execution at that point).
+                // Emulate the normal control flow of a function when
+                // encountering a return (stopping execution at that point).
                 // This works as we are wrapping the entire function with a
                 // dummy loop statement (repeat, while, for, etc) that only does one iteration.
                 statements.Add(SyntaxConstants.BREAK_STATEMENT);

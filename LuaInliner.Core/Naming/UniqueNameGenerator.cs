@@ -9,7 +9,7 @@ internal class UniqueNameGenerator
     /// Generated sequentially; each new variable name would have an
     /// id that is incremented by one from the last.
     /// </summary>
-    private uint _nameId;
+    private uint _uniqueNameId;
 
     /// <summary>
     /// Generates a variable name that is unique with the scope specified.
@@ -22,15 +22,15 @@ internal class UniqueNameGenerator
     /// <exception cref="Exception"> Unable to generate unique variable name with the specific prefix</exception>
     public string GetUniqueName(IScope scope, string prefix)
     {
-        HashSet<string> usedVariableNames = GetUsedVariableNames(scope);
+        ISet<string> usedVariableNames = GetUsedVariableNames(scope);
 
-        while (_nameId < uint.MaxValue)
+        while (_uniqueNameId < uint.MaxValue)
         {
-            string name = $"{prefix}__{_nameId}";
+            string name = $"{prefix}__{_uniqueNameId}";
 
-            _nameId++;
+            _uniqueNameId++;
 
-            // Accept if its not a Lua keyword and not taken in the scope
+            // Accept if its not a Lua keyword and not taken in the current scope
             if (
                 SyntaxFacts.GetKeywordKind(name) == SyntaxKind.IdentifierToken
                 && !usedVariableNames.Contains(name)
@@ -48,7 +48,7 @@ internal class UniqueNameGenerator
     /// </summary>
     /// <param name="scope"></param>
     /// <returns></returns>
-    public static HashSet<string> GetUsedVariableNames(IScope scope)
+    public static ISet<string> GetUsedVariableNames(IScope scope)
     {
         HashSet<string> usedNames = [];
 

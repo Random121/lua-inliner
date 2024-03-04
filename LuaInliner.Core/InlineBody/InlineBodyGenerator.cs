@@ -13,7 +13,7 @@ internal static partial class InlineBodyGenerator
     public static SyntaxList<StatementSyntax> Generate(
         InlineFunctionInfo calledFunction,
         SeparatedSyntaxList<ExpressionSyntax> arguments,
-        List<string> returnVariableNames
+        IList<string> returnVariableNames
     )
     {
         StatementListSyntax functionBody = SyntaxFactory.StatementList(calledFunction.Body);
@@ -102,7 +102,7 @@ internal static partial class InlineBodyGenerator
     /// <param name="returnVariableNames"></param>
     /// <returns></returns>
     private static LocalVariableDeclarationStatementSyntax GenerateReturnVariableDeclaration(
-        List<string> returnVariableNames
+        IList<string> returnVariableNames
     )
     {
         IEnumerable<LocalDeclarationNameSyntax> variableNames = returnVariableNames.Select(
