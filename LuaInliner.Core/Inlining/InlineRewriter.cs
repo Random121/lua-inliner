@@ -5,50 +5,23 @@ using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 using LuaInliner.Core.Collectors;
 using LuaInliner.Core.Extensions;
-using LuaInliner.Core.InlineBody;
+using LuaInliner.Core.InlineExpansion;
 using LuaInliner.Core.Naming;
 
 namespace LuaInliner.Core.Inlining;
 
 /// <summary>
-/// Edits to perform on the AST to inline a statement.
+/// Rewriter to perform inlining.
 /// </summary>
-internal record class InliningEdits
-{
-    // We are using a record class rather than a record struct for this
-    // since record classes are reference types and we need to mutate
-    // this object within an array while storing it in a temporary variable
-    // (without creating a copy like in the case with record structs).
-
-    /// <summary>
-    /// Statements to be inserted in front of the current statement.
-    /// </summary>
-    public List<StatementSyntax> Insertions = [];
-
-    /// <summary>
-    /// Whether the calling statement should be removed.<br/>
-    /// This is usually used if the calling statement doesn't have a return value.
-    /// </summary>
-    public bool RemoveCallingStatement = false;
-}
-
-/// <summary>
-/// Edits to perform on the AST to support multiple returns from inline functions.
-/// </summary>
-/// <param name="ReturnIdentifierNames"></param>
-internal record class MultipleReturnsEdits(
-    ImmutableArray<IdentifierNameSyntax> ReturnIdentifierNames
-);
-
 internal sealed partial class InlineRewriter : LuaSyntaxRewriter
 {
     public static SyntaxNode Rewrite(
         SyntaxNode node,
         Script script,
-        IList<InlineFunctionCallInfo> functionCallInfos
+        IReadOnlyList<InlineFunctionCall> inlineFunctionCalls
     )
     {
-        InlineRewriter rewriter = new(script, functionCallInfos);
+        InlineRewriter rewriter = new(script, inlineFunctionCalls);
         return rewriter.Visit(node);
     }
 
@@ -56,25 +29,19 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
 
     private readonly ImmutableDictionary<
         FunctionCallExpressionSyntax,
-        InlineFunctionCallInfo
-    > _callInfoLookup;
+        InlineFunctionCall
+    > _inlineFunctionCallLookup;
 
-    private readonly UniqueNameGenerator _nameGenerator = new();
+    private readonly Dictionary<StatementSyntax, InliningEdits> _inliningEdits = [];
 
-    /// <summary>
-    /// Mapping between a statement that is being inlined and the edits that need to be performed.
-    /// </summary>
-    private readonly Dictionary<StatementSyntax, InliningEdits> _inliningEditsLookup = [];
+    private readonly Dictionary<SyntaxNode, MultipleReturnsEdits> _multipleReturnsEdits = [];
 
-    /// <summary>
-    /// Lookup for the edits needed using the node which contains the return.
-    /// </summary>
-    public readonly Dictionary<SyntaxNode, MultipleReturnsEdits> _multipleReturnsEditsLookup = [];
-
-    private InlineRewriter(Script script, IList<InlineFunctionCallInfo> functionCallInfos)
+    private InlineRewriter(Script script, IReadOnlyList<InlineFunctionCall> inlineFunctionCalls)
     {
         _script = script;
-        _callInfoLookup = functionCallInfos.ToImmutableDictionary(info => info.CallExpressionNode);
+        _inlineFunctionCallLookup = inlineFunctionCalls.ToImmutableDictionary(call =>
+            call.CallExpressionNode
+        );
     }
 
     public override SyntaxList<TNode> VisitList<TNode>(SyntaxList<TNode> list)
@@ -90,7 +57,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         {
             StatementSyntax statement = (StatementSyntax)Visit(originalStatement);
 
-            if (_inliningEditsLookup.TryGetValue(originalStatement, out InliningEdits? edits))
+            if (_inliningEdits.TryGetValue(originalStatement, out InliningEdits? edits))
             {
                 statements.AddRange(edits.Insertions);
 
@@ -108,9 +75,12 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
 
     public override SyntaxNode? VisitFunctionCallExpression(FunctionCallExpressionSyntax node)
     {
-        bool isInlineCall = _callInfoLookup.TryGetValue(node, out InlineFunctionCallInfo? callInfo);
+        bool isInlineCall = _inlineFunctionCallLookup.TryGetValue(
+            node,
+            out InlineFunctionCall? inlineFunctionCall
+        );
 
-        if (!isInlineCall || callInfo is null)
+        if (!isInlineCall || inlineFunctionCall is null)
         {
             return base.VisitFunctionCallExpression(node);
         }
@@ -121,36 +91,33 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             (FunctionArgumentSyntax)Visit(node.Argument)
         );
 
-        InlineFunctionInfo calledFunction = callInfo.CalledFunction;
+        InlineFunction calledFunction = inlineFunctionCall.CalledFunction;
         StatementSyntax parentStatement = GetParentStatementOfExpression(node);
         IScope currentScope = _script.GetScope(node)!;
+        SyntaxNode parentNode = node.Parent!;
+
+        Debug.Assert(parentNode is not null, "Function call node does not have a parent");
 
         SeparatedSyntaxList<ExpressionSyntax> argumentValues = GetActualArgumentValues(
             arguments,
             calledFunction.Parameters.Count
         );
 
-        List<string> returnVariableNames = GenerateReturnVariableNames(
-            calledFunction.MaxReturnCount,
-            currentScope
+        List<IdentifierNameSyntax> returnVariableIdentifiers = GenerateReturnVariableIdentifiers(
+            currentScope,
+            calledFunction.MaxReturnCount
         );
 
-        ImmutableArray<IdentifierNameSyntax> returnVariableIdentifiers = returnVariableNames
-            .Select(SyntaxFactory.IdentifierName)
-            .ToImmutableArray();
-
-        SyntaxList<StatementSyntax> inlineFunctionBody = InlineBodyGenerator.Generate(
-            calledFunction,
+        IReadOnlyList<StatementSyntax> inlinedFunctionStatements = new InlinedFunctionBuilder(
+            calledFunction.Body,
+            calledFunction.Parameters,
             argumentValues,
-            returnVariableNames
-        );
+            returnVariableIdentifiers
+        ).ToStatements();
 
-        InliningEdits inliningEdits = _inliningEditsLookup.GetOrCreate(parentStatement);
-        SyntaxNode parentNode = node.Parent!;
+        InliningEdits inliningEdits = _inliningEdits.GetOrCreate(parentStatement);
 
-        Debug.Assert(parentNode is not null, "Function call node does not have a parent");
-
-        inliningEdits.Insertions.AddRange(inlineFunctionBody);
+        inliningEdits.Insertions.AddRange(inlinedFunctionStatements);
 
         // We have to remove this node if it is an ExpressionStatement since the return values
         // are not used and would cause an error in the Lua script if it is left in.
@@ -163,8 +130,8 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         }
 
         // Functions without a explicit return value implicitly returns nil
-        // (this isn't true in all cases but it is a good enough substitute)
-        if (returnVariableNames.Count == 0)
+        // (this isn't the exact behaviour but is a good enough substitute).
+        if (returnVariableIdentifiers.Count == 0)
         {
             return SyntaxConstants.NIL_LITERAL;
         }
@@ -173,12 +140,15 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         {
             MultipleReturnsEdits multipleReturnEdits = new(returnVariableIdentifiers);
 
-            SyntaxNode returnValueContainingNode = parentNode.IsKind(SyntaxKind.UnkeyedTableField)
-                ? parentNode.Parent!
-                : parentNode;
+            SyntaxNode returnValueContainingNode = parentNode.Kind() switch
+            {
+                SyntaxKind.UnkeyedTableField => parentNode.Parent!,
+                _ => parentNode
+            };
 
-            _multipleReturnsEditsLookup.Add(returnValueContainingNode, multipleReturnEdits);
+            _multipleReturnsEdits.Add(returnValueContainingNode, multipleReturnEdits);
 
+            // Can return anything since it will be removed later on
             return node;
         }
 
@@ -187,27 +157,31 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     }
 
     /// <summary>
-    /// Generates a list of return variable names that are unique to the current scope.
+    /// Generates a list of return variable identifiers that are unique to the current scope.
     /// </summary>
-    /// <param name="maxReturnCount"></param>
     /// <param name="scope"></param>
+    /// <param name="count"></param>
     /// <returns></returns>
-    private List<string> GenerateReturnVariableNames(int maxReturnCount, IScope scope)
+    private static List<IdentifierNameSyntax> GenerateReturnVariableIdentifiers(
+        IScope scope,
+        int count
+    )
     {
+        // TODO: make this user configurable
         const string RETURN_VARIABLE_NAME_PREFIX = "__inline_return";
 
-        List<string> returnVariableNames = new(maxReturnCount);
+        UniqueNameGenerator nameGenerator = new(scope);
+        List<IdentifierNameSyntax> returnVariableIdentifiers = new(count);
 
-        for (int i = 0; i < maxReturnCount; i++)
+        for (int i = 0; i < count; i++)
         {
-            // TODO: Make this more performant since it is retrieving the
-            // used variable names for the scope every iteration
-            string name = _nameGenerator.GetUniqueName(scope, RETURN_VARIABLE_NAME_PREFIX);
+            string name = nameGenerator.GetUniqueName(RETURN_VARIABLE_NAME_PREFIX);
+            var identifier = SyntaxFactory.IdentifierName(name);
 
-            returnVariableNames.Add(name);
+            returnVariableIdentifiers.Add(identifier);
         }
 
-        return returnVariableNames;
+        return returnVariableIdentifiers;
     }
 
     /// <summary>
@@ -289,14 +263,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
     /// <returns></returns>
     private static StatementSyntax GetParentStatementOfExpression(ExpressionSyntax node)
     {
-        // We don't know the exact type of the parent statement, but we do
-        // know it is always contained within a statement list.
-        static bool isParentStatement(StatementSyntax node) =>
-            node.Parent.IsKind(SyntaxKind.StatementList);
-
-        StatementSyntax? parentStatement = node.FirstAncestorOrSelf(
-            (Func<StatementSyntax, bool>)isParentStatement
-        );
+        StatementSyntax? parentStatement = node.FirstAncestorOrSelf<StatementSyntax>();
 
         Debug.Assert(parentStatement is not null, "Expression is not contained within a statement");
 

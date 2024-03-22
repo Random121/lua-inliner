@@ -1,29 +1,36 @@
-﻿using System.Collections.Immutable;
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 
-namespace LuaInliner.Core.InlineBody;
+namespace LuaInliner.Core.InlineExpansion;
 
-internal static partial class InlineBodyGenerator
+internal sealed partial class InlinedFunctionBuilder
 {
     /// <summary>
-    /// Rewrite return statements within the inline body.
+    /// Rewrite all return statements to emulate a return in a inlined function.
     /// </summary>
     private sealed class ReturnRewriter : LuaSyntaxRewriter
     {
-        public static SyntaxNode Rewrite(SyntaxNode node, IList<string> returnVariableNames)
+        public static SyntaxNode Rewrite(
+            SyntaxNode node,
+            IReadOnlyList<IdentifierNameSyntax> returnVariableIdentifiers
+        )
         {
-            ReturnRewriter rewriter = new(returnVariableNames);
+            ReturnRewriter rewriter = new(returnVariableIdentifiers);
             return rewriter.Visit(node);
         }
 
         private readonly ImmutableArray<PrefixExpressionSyntax> _returnVariableIdentifiers;
 
-        private ReturnRewriter(IList<string> returnVariableNames)
+        private ReturnRewriter(IReadOnlyList<IdentifierNameSyntax> returnVariableIdentifiers)
         {
-            _returnVariableIdentifiers = returnVariableNames
-                .Select(SyntaxFactory.IdentifierName)
+            _returnVariableIdentifiers = returnVariableIdentifiers
                 .Cast<PrefixExpressionSyntax>()
                 .ToImmutableArray();
         }
@@ -39,17 +46,9 @@ internal static partial class InlineBodyGenerator
 
             foreach (StatementSyntax originalStatement in list.Cast<StatementSyntax>())
             {
-                bool isFunctionDeclaration = originalStatement.Kind() switch
-                {
-                    SyntaxKind.LocalFunctionDeclarationStatement
-                    or SyntaxKind.FunctionDeclarationStatement
-                        => true,
-                    _ => false
-                };
-
                 // We don't visit inside function declaration nodes since all
                 // the returns inside are irrelevant to the current function
-                if (isFunctionDeclaration)
+                if (IsFunctionNode(originalStatement))
                 {
                     statements.Add(originalStatement);
                     continue;
@@ -87,9 +86,8 @@ internal static partial class InlineBodyGenerator
         }
 
         /// <summary>
-        /// Override this visit method so we don't visit inside this node
-        /// since all the returns inside are irrelevant to the current function.
-        /// Since this is not a statement, it can't be handled inside of VisitList().
+        /// We don't descent into inner functions since they contain returns
+        /// that are irrelevant to the outer function.
         /// </summary>
         /// <param name="node"></param>
         /// <returns></returns>
@@ -98,6 +96,26 @@ internal static partial class InlineBodyGenerator
         )
         {
             return node;
+        }
+
+        /// <summary>
+        /// Returns whether the node is a function.
+        /// </summary>
+        /// <param name="node"></param>
+        /// <returns></returns>
+        private static bool IsFunctionNode(SyntaxNode node)
+        {
+            // TODO: this method is duplicated from InlineFunctionCollector
+            // so place both in a helper class somewhere
+
+            return node.Kind() switch
+            {
+                SyntaxKind.AnonymousFunctionExpression
+                or SyntaxKind.LocalFunctionDeclarationStatement
+                or SyntaxKind.FunctionDeclarationStatement
+                    => true,
+                _ => false
+            };
         }
     }
 }

@@ -7,50 +7,39 @@ using LuaInliner.Core.Extensions;
 
 namespace LuaInliner.Core.Collectors;
 
-/// <summary>
-/// Information about an inline function
-/// </summary>
-/// <param name="DeclarationNode"></param>
-/// <param name="Parameters"></param>
-/// <param name="Body"></param>
-/// <param name="MaxReturnCount">Maximum number of values which the function returns</param>
-internal record class InlineFunctionInfo(
-    LocalFunctionDeclarationStatementSyntax DeclarationNode,
-    SeparatedSyntaxList<NamedParameterSyntax> Parameters,
-    SyntaxList<StatementSyntax> Body,
-    IList<ReturnStatementSyntax> Returns,
-    int MaxReturnCount
-);
+using DiagnosticList = IReadOnlyList<Diagnostic>;
+using InlineFunctionList = IReadOnlyList<InlineFunction>;
 
 /// <summary>
-/// Collect functions which have been marked as being inline.
+/// Collect functions that have been marked as inline.
 /// </summary>
 internal sealed class InlineFunctionCollector : LuaSyntaxWalker
 {
-    public static Result<IList<InlineFunctionInfo>, IList<Diagnostic>> Collect(SyntaxNode node)
+    public static Result<InlineFunctionList, DiagnosticList> Collect(SyntaxNode node)
     {
         InlineFunctionCollector collector = new();
         collector.Visit(node);
 
-        List<Diagnostic> diagnostics = collector._diagnostics;
+        DiagnosticList diagnostics = collector._diagnostics;
 
         return diagnostics.Count != 0
-            ? Result.Err<IList<InlineFunctionInfo>, IList<Diagnostic>>(diagnostics)
-            : Result.Ok<IList<InlineFunctionInfo>, IList<Diagnostic>>(collector._functions);
+            ? Result.Err<InlineFunctionList, DiagnosticList>(diagnostics)
+            : Result.Ok<InlineFunctionList, DiagnosticList>(collector._inlineFunctions);
     }
 
-    private readonly List<InlineFunctionInfo> _functions = [];
+    private readonly List<InlineFunction> _inlineFunctions = [];
+    private readonly HashSet<SyntaxTrivia> _validInlineDirectives = [];
     private readonly List<Diagnostic> _diagnostics = [];
 
     private InlineFunctionCollector()
-        : base(SyntaxWalkerDepth.Node) { }
+        : base(SyntaxWalkerDepth.Trivia) { }
 
     public override void VisitLocalFunctionDeclarationStatement(
         LocalFunctionDeclarationStatementSyntax node
     )
     {
-        SyntaxTriviaList leadingBodyTrivia = GetFunctionBodyLeadingTrivia(node);
-        Result<SyntaxTrivia, Unit> inlineDirective = GetInlineDirective(leadingBodyTrivia);
+        SyntaxTriviaList bodyLeadingTrivia = GetFunctionBodyLeadingTrivia(node);
+        Result<SyntaxTrivia, Unit> inlineDirective = GetInlineDirective(bodyLeadingTrivia);
 
         // Not an inline function
         if (inlineDirective.IsErr)
@@ -59,65 +48,108 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             return;
         }
 
+        var namedParameters = GetNamedParametersFromFunction(node);
+
+        if (namedParameters.Err is { HasValue: true, Value: Diagnostic varargDiagnostic })
+        {
+            _diagnostics.Add(varargDiagnostic);
+
+            base.VisitLocalFunctionDeclarationStatement(node);
+            return;
+        }
+
         SyntaxTrivia inlineDirectiveTrivia = inlineDirective.Ok.Value;
 
-        // Remove the inline directive from the function body
-        SyntaxList<StatementSyntax> cleanFunctionBody = GetStatementsWithoutInlineDirective(
+        // We don't want to keep the inline directive in case the user plans
+        // on running the file through the inliner multiple times
+        SyntaxList<StatementSyntax> cleanedFunctionBody = RemoveLeadingTriviaFromStatements(
             node.Body.Statements,
             inlineDirectiveTrivia
         );
 
-        var namedParameters = GetNamedParametersFromFunction(node);
+        SeparatedSyntaxList<NamedParameterSyntax> parameters = namedParameters.Ok.Value;
 
-        if (namedParameters.IsOk)
-        {
-            SeparatedSyntaxList<NamedParameterSyntax> parameters = namedParameters.Ok.Value;
+        // Get the return statement nodes for the current function
+        IReadOnlyList<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node);
 
-            // Get the return statement nodes for the current function.
-            // We don't descent into inner functions since they contain returns
-            // that are irrelevant to the outer function.
-            IList<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node.Body);
+        int maxReturnCount = returns.Any() ? returns.Max(node => node.Expressions.Count) : 0;
 
-            int maxReturnCount = returns.Any() ? returns.Max(node => node.Expressions.Count) : 0;
+        InlineFunction inlineFunction =
+            new(node, parameters, cleanedFunctionBody, returns, maxReturnCount);
 
-            InlineFunctionInfo inlineFunctionInfo =
-                new(node, parameters, cleanFunctionBody, returns, maxReturnCount);
+        _inlineFunctions.Add(inlineFunction);
 
-            _functions.Add(inlineFunctionInfo);
-        }
-        else
-        {
-            _diagnostics.Add(namedParameters.Err.Value);
-        }
+        // Keep track of all valid usages of the inline directive
+        // so we can check for all invalid usages
+        _validInlineDirectives.Add(inlineDirectiveTrivia);
 
         base.VisitLocalFunctionDeclarationStatement(node);
     }
 
-    private static IList<ReturnStatementSyntax> GetFunctionReturnStatements(
-        StatementListSyntax body
+    /// <summary>
+    /// Validate the usages of the inline directive.
+    /// </summary>
+    /// <param name="trivia"></param>
+    public override void VisitTrivia(SyntaxTrivia trivia)
+    {
+        if (IsInlineDirective(trivia) && !_validInlineDirectives.Contains(trivia))
+        {
+            var diagnostic = Diagnostic.Create(
+                InlinerDiagnostics.InvalidInlineDirectiveUsage,
+                trivia.GetLocation()
+            );
+
+            _diagnostics.Add(diagnostic);
+        }
+
+        base.VisitTrivia(trivia);
+    }
+
+    /// <summary>
+    /// Returns all the <see cref="ReturnStatementSyntax"/> within a function.
+    /// </summary>
+    /// <param name="function"></param>
+    /// <returns></returns>
+    private static IReadOnlyList<ReturnStatementSyntax> GetFunctionReturnStatements(
+        LocalFunctionDeclarationStatementSyntax function
     )
     {
-        // We don't descent into inner functions since they contain returns
-        // that are irrelevant to the outer function.
-        static bool shouldDescend(SyntaxNode node) =>
-            node.Kind() switch
-            {
-                SyntaxKind.AnonymousFunctionExpression
-                or SyntaxKind.LocalFunctionDeclarationStatement
-                or SyntaxKind.FunctionDeclarationStatement
-                    => false,
-                _ => true
-            };
+        StatementListSyntax body = function.Body;
 
-        return body.DescendantNodes(shouldDescend)
+        // We don't descent into inner functions since they contain returns
+        // that are irrelevant to the outer function
+        return body.DescendantNodes(node => !IsFunctionNode(node))
             .Where(node => node.IsKind(SyntaxKind.ReturnStatement))
             .Cast<ReturnStatementSyntax>()
             .ToImmutableArray();
     }
 
-    private static SyntaxList<StatementSyntax> GetStatementsWithoutInlineDirective(
+    /// <summary>
+    /// Returns whether the node is a function.
+    /// </summary>
+    /// <param name="node"></param>
+    /// <returns></returns>
+    private static bool IsFunctionNode(SyntaxNode node)
+    {
+        return node.Kind() switch
+        {
+            SyntaxKind.AnonymousFunctionExpression
+            or SyntaxKind.LocalFunctionDeclarationStatement
+            or SyntaxKind.FunctionDeclarationStatement
+                => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Removes the specified leading trivia from the statements.
+    /// </summary>
+    /// <param name="statements"></param>
+    /// <param name="trivia"></param>
+    /// <returns></returns>
+    private static SyntaxList<StatementSyntax> RemoveLeadingTriviaFromStatements(
         SyntaxList<StatementSyntax> statements,
-        SyntaxTrivia inlineDirectiveTrivia
+        SyntaxTrivia trivia
     )
     {
         if (!statements.Any())
@@ -125,14 +157,17 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             return statements;
         }
 
-        StatementSyntax firstStatement = statements.First();
+        StatementSyntax leadingStatement = statements.First();
+        StatementSyntax withoutLeadingTrivia = leadingStatement.RemoveLeadingTrivia(trivia);
 
-        return statements.Replace(
-            firstStatement,
-            firstStatement.RemoveLeadingTrivia(inlineDirectiveTrivia)
-        );
+        return statements.Replace(leadingStatement, withoutLeadingTrivia);
     }
 
+    /// <summary>
+    /// Returns all named parameters from the function.
+    /// </summary>
+    /// <param name="function"></param>
+    /// <returns></returns>
     private static Result<
         SeparatedSyntaxList<NamedParameterSyntax>,
         Diagnostic
@@ -140,9 +175,8 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
     {
         SeparatedSyntaxList<ParameterSyntax> parameters = function.Parameters.Parameters;
 
-        // There should not be any vararg parameters.
-        // Only the last parameter in a function can be vararg, so
-        // just check that.
+        // We can't inline any vararg parameters. Since only the last parameter can be vararg,
+        // we only need to check that
         if (parameters.Any() && parameters.Last().IsKind(SyntaxKind.VarArgParameter))
         {
             var diagnostic = Diagnostic.Create(
@@ -153,13 +187,9 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             return Result.Err<SeparatedSyntaxList<NamedParameterSyntax>, Diagnostic>(diagnostic);
         }
 
-        // Since we already did checking for vararg parameters, we guarantee all the parameters are of the right type,
-        // so force cast all elements.
-        IEnumerable<NamedParameterSyntax> namedParameters = parameters.Cast<NamedParameterSyntax>();
+        var namedParameters = SyntaxFactory.SeparatedList(parameters.Cast<NamedParameterSyntax>());
 
-        return Result.Ok<SeparatedSyntaxList<NamedParameterSyntax>, Diagnostic>(
-            SyntaxFactory.SeparatedList(namedParameters)
-        );
+        return Result.Ok<SeparatedSyntaxList<NamedParameterSyntax>, Diagnostic>(namedParameters);
     }
 
     /// <summary>
@@ -170,9 +200,6 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
     /// <returns></returns>
     private static Result<SyntaxTrivia, Unit> GetInlineDirective(SyntaxTriviaList trivias)
     {
-        // FIXME: Add a dynamic way of determining the inline directive (user customizable)
-        const string INLINE_DIRECTIVE = "--!!INLINE_FUNCTION";
-
         if (!trivias.Any())
         {
             return Result.Err<SyntaxTrivia, Unit>(Unit.Default);
@@ -182,15 +209,26 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             !trivia.IsKind(SyntaxKind.WhitespaceTrivia)
         );
 
-        if (
-            !firstNonWhitespaceTrivia.IsKind(SyntaxKind.SingleLineCommentTrivia)
-            || firstNonWhitespaceTrivia.ToString() != INLINE_DIRECTIVE
-        )
+        if (!IsInlineDirective(firstNonWhitespaceTrivia))
         {
             return Result.Err<SyntaxTrivia, Unit>(Unit.Default);
         }
 
         return Result.Ok<SyntaxTrivia, Unit>(firstNonWhitespaceTrivia);
+    }
+
+    /// <summary>
+    /// Returns whether the trivia is an inline directive.
+    /// </summary>
+    /// <param name="trivia"></param>
+    /// <returns></returns>
+    private static bool IsInlineDirective(SyntaxTrivia trivia)
+    {
+        // TODO: Add a dynamic way of determining the inline directive (user customizable)
+        const string INLINE_DIRECTIVE = "--!!INLINE_FUNCTION";
+
+        return trivia.IsKind(SyntaxKind.SingleLineCommentTrivia)
+            && trivia.ToString() == INLINE_DIRECTIVE;
     }
 
     /// <summary>
@@ -202,14 +240,12 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         LocalFunctionDeclarationStatementSyntax function
     )
     {
-        SyntaxList<StatementSyntax> bodyStatements = function.Body.Statements;
+        SyntaxList<StatementSyntax> statements = function.Body.Statements;
 
-        return bodyStatements.Any() switch
-        {
-            true => bodyStatements.First().GetLeadingTrivia(),
-            // Trivia within the body of an empty function is always attached
-            // to the end keyword
-            false => function.EndKeyword.LeadingTrivia,
-        };
+        // Leading trivia of the function body is always attached
+        // to the first token that proceeds the function signature
+        return statements.Any()
+            ? statements.First().GetLeadingTrivia()
+            : function.EndKeyword.LeadingTrivia;
     }
 }

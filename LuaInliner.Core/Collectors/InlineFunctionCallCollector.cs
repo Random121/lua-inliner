@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
@@ -8,51 +9,47 @@ using LuaInliner.Core.Extensions;
 
 namespace LuaInliner.Core.Collectors;
 
-internal record class InlineFunctionCallInfo(
-    InlineFunctionInfo CalledFunction,
-    FunctionCallExpressionSyntax CallExpressionNode
-);
+using DiagnosticList = IReadOnlyList<Diagnostic>;
+using InlineFunctionCallList = IReadOnlyList<InlineFunctionCall>;
 
 /// <summary>
 /// Collect function calls to inline functions.
 /// </summary>
 internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
 {
-    public static Result<IList<InlineFunctionCallInfo>, IList<Diagnostic>> Collect(
+    public static Result<InlineFunctionCallList, DiagnosticList> Collect(
         SyntaxNode node,
         Script script,
-        IList<InlineFunctionInfo> inlineFunctionInfo
+        IReadOnlyList<InlineFunction> inlineFunctions
     )
     {
-        InlineFunctionCallCollector collector = new(script, inlineFunctionInfo);
+        InlineFunctionCallCollector collector = new(script, inlineFunctions);
         collector.Visit(node);
 
-        List<Diagnostic> diagnostics = collector._diagnostics;
+        DiagnosticList diagnostics = collector._diagnostics;
+        InlineFunctionCallList calls = collector._inlineFunctionCalls;
 
         return diagnostics.Count != 0
-            ? Result.Err<IList<InlineFunctionCallInfo>, IList<Diagnostic>>(diagnostics)
-            : Result.Ok<IList<InlineFunctionCallInfo>, IList<Diagnostic>>(collector._calls);
+            ? Result.Err<InlineFunctionCallList, DiagnosticList>(diagnostics)
+            : Result.Ok<InlineFunctionCallList, DiagnosticList>(calls);
     }
 
-    private readonly List<InlineFunctionCallInfo> _calls = [];
+    private readonly List<InlineFunctionCall> _inlineFunctionCalls = [];
     private readonly List<Diagnostic> _diagnostics = [];
 
     private readonly Script _script;
 
-    /// <summary>
-    /// Maps a function declaration node to its inline function information.
-    /// </summary>
     private readonly ImmutableDictionary<
         LocalFunctionDeclarationStatementSyntax,
-        InlineFunctionInfo
-    > _functionInfoLookup;
+        InlineFunction
+    > _inlineFunctionLookup;
 
-    private InlineFunctionCallCollector(Script script, IList<InlineFunctionInfo> inlineFunctionInfo)
+    private InlineFunctionCallCollector(Script script, IEnumerable<InlineFunction> inlineFunctions)
         : base(SyntaxWalkerDepth.Node)
     {
         _script = script;
-        _functionInfoLookup = inlineFunctionInfo.ToImmutableDictionary(functionInfo =>
-            functionInfo.DeclarationNode
+        _inlineFunctionLookup = inlineFunctions.ToImmutableDictionary(function =>
+            function.DeclarationStatementNode
         );
     }
 
@@ -60,7 +57,7 @@ internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
     {
         IVariable? calledFunction = _script.GetVariable(node.Expression);
 
-        // Don't inline external or indirect function calls
+        // Can't inline external or indirect function calls
         if (calledFunction is null || calledFunction.Kind != VariableKind.Local)
         {
             base.VisitFunctionCallExpression(node);
@@ -71,16 +68,26 @@ internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
 
         // We don't inline global functions because
         // (1) Loretta doesn't provide scoping information for it
-        // (2) We can't determine the correct global function definition to use if there are multiple ones
-        //     or if they are in conditional statements
+        // (2) We can't determine which global function definition to use if there are multiple ones
+        //     or if their declaration depends on runtime information (such as within a conditional statement)
         if (!calledFunctionDeclaration.IsKind(SyntaxKind.LocalFunctionDeclarationStatement))
         {
             base.VisitFunctionCallExpression(node);
             return;
         }
 
-        // TODO: Move this check to a separate step in the inline process
-        //       or to the inline function collection step
+        bool isInlineFunctionCall = _inlineFunctionLookup.TryGetValue(
+            (LocalFunctionDeclarationStatementSyntax)calledFunctionDeclaration,
+            out InlineFunction? inlineFunction
+        );
+
+        if (!isInlineFunctionCall || inlineFunction is null)
+        {
+            base.VisitFunctionCallExpression(node);
+            return;
+        }
+
+        // TODO: Implement a way to inline recursive calls to a certain depth
 
         // Cannot inline recursive calls
         if (calledFunctionDeclaration.Contains(node))
@@ -96,21 +103,9 @@ internal sealed class InlineFunctionCallCollector : LuaSyntaxWalker
             return;
         }
 
-        bool isInlineFunctionCall = _functionInfoLookup.TryGetValue(
-            (LocalFunctionDeclarationStatementSyntax)calledFunctionDeclaration,
-            out InlineFunctionInfo? inlineFunctionInfo
-        );
+        InlineFunctionCall inlineFunctionCall = new(inlineFunction, node);
 
-        // Not a call to an inline function
-        if (!isInlineFunctionCall || inlineFunctionInfo is null)
-        {
-            base.VisitFunctionCallExpression(node);
-            return;
-        }
-
-        InlineFunctionCallInfo inlineFunctionCallInfo = new(inlineFunctionInfo, node);
-
-        _calls.Add(inlineFunctionCallInfo);
+        _inlineFunctionCalls.Add(inlineFunctionCall);
 
         base.VisitFunctionCallExpression(node);
     }

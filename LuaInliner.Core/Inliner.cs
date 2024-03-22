@@ -8,8 +8,10 @@ using LuaInliner.Core.Inlining;
 
 namespace LuaInliner.Core;
 
+using DiagnosticList = IReadOnlyList<Diagnostic>;
+
 /// <summary>
-/// Lua inliner
+/// Represents a lua inliner.
 /// </summary>
 /// <param name="luaParseOptions"></param>
 /// <param name="minimumErrorSeverity">Minimum severity encountered during parsing before an error is thrown.</param>
@@ -18,71 +20,73 @@ public sealed class Inliner(
     DiagnosticSeverity minimumErrorSeverity = DiagnosticSeverity.Error
 )
 {
-    public Result<SyntaxNode, IList<Diagnostic>> InlineFile(SourceText source)
+    /// <summary>
+    /// Inlines all functions within a file.
+    /// </summary>
+    /// <param name="source"></param>
+    /// <returns></returns>
+    public Result<SyntaxNode, DiagnosticList> InlineFile(SourceText source)
     {
         SyntaxTree tree = LuaSyntaxTree.ParseText(source, luaParseOptions);
 
         List<Diagnostic> diagnostics = [];
 
-        // Check diagnostics from parsing
         {
-            var parseDiagnostics = tree.GetDiagnostics().ToImmutableArray();
+            var parseDiagnostics = tree.GetDiagnostics();
 
-            // Add current diagnostics
             diagnostics.AddRange(parseDiagnostics);
 
             if (ShouldErrorWithDiagnostics(parseDiagnostics))
             {
-                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
+                return Result.Err<SyntaxNode, DiagnosticList>(diagnostics);
             }
         }
 
         SyntaxNode root = tree.GetRoot();
         Script script = new([tree]);
 
-        var inlineFunctionInfoList = InlineFunctionCollector.Collect(root);
+        var inlineFunctions = InlineFunctionCollector.Collect(root);
 
-        if (inlineFunctionInfoList.IsErr)
+        if (inlineFunctions.IsErr)
         {
-            var functionInfoDiagnostics = inlineFunctionInfoList.Err.Value;
+            var inlineFunctionDiagnostics = inlineFunctions.Err.Value;
 
-            // Add current diagnostics
-            diagnostics.AddRange(functionInfoDiagnostics);
+            diagnostics.AddRange(inlineFunctionDiagnostics);
 
-            if (ShouldErrorWithDiagnostics(functionInfoDiagnostics))
+            if (ShouldErrorWithDiagnostics(inlineFunctionDiagnostics))
             {
-                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
+                return Result.Err<SyntaxNode, DiagnosticList>(diagnostics);
             }
         }
 
-        var inlineFunctionCallInfoList = InlineFunctionCallCollector.Collect(
+        var inlineFunctionCalls = InlineFunctionCallCollector.Collect(
             root,
             script,
-            inlineFunctionInfoList.Ok.Value
+            inlineFunctions.Ok.Value
         );
 
-        if (inlineFunctionCallInfoList.IsErr)
+        if (inlineFunctionCalls.IsErr)
         {
-            var callInfoDiagnostics = inlineFunctionInfoList.Err.Value;
+            var inlineFunctionCallDiagnostics = inlineFunctions.Err.Value;
 
-            // Add current diagnostics
-            diagnostics.AddRange(callInfoDiagnostics);
+            diagnostics.AddRange(inlineFunctionCallDiagnostics);
 
-            if (ShouldErrorWithDiagnostics(callInfoDiagnostics))
+            if (ShouldErrorWithDiagnostics(inlineFunctionCallDiagnostics))
             {
-                return Result.Err<SyntaxNode, IList<Diagnostic>>(diagnostics);
+                return Result.Err<SyntaxNode, DiagnosticList>(diagnostics);
             }
         }
 
-        SyntaxNode rewritten = InlineRewriter.Rewrite(
-            root,
-            script,
-            inlineFunctionCallInfoList.Ok.Value
-        );
+        SyntaxNode rewritten = InlineRewriter.Rewrite(root, script, inlineFunctionCalls.Ok.Value);
 
-        return Result.Ok<SyntaxNode, IList<Diagnostic>>(rewritten);
+        return Result.Ok<SyntaxNode, DiagnosticList>(rewritten);
     }
 
+    /// <summary>
+    /// Returns whether the diagnostics should result in an error.
+    /// </summary>
+    /// <param name="diagnostics"></param>
+    /// <returns></returns>
     private bool ShouldErrorWithDiagnostics(IEnumerable<Diagnostic> diagnostics)
     {
         return diagnostics.Any(diagnostic => diagnostic.Severity >= minimumErrorSeverity);

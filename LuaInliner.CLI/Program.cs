@@ -1,11 +1,13 @@
-﻿using Loretta.CodeAnalysis;
+﻿using System.Collections.Immutable;
+using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
 using LuaInliner.Common;
 using LuaInliner.Core;
-using System.Collections.Immutable;
 
 namespace LuaInliner.CLI;
+
+using DiagnosticList = IReadOnlyList<Diagnostic>;
 
 internal static class Program
 {
@@ -30,11 +32,11 @@ internal static class Program
         LuaParseOptions luaParseOptions = new(LuaSyntaxOptions.Luau);
         Inliner inliner = new(luaParseOptions);
 
-        Result<SyntaxNode, IList<Diagnostic>> inlineResult = inliner.InlineFile(fileSourceText);
+        Result<SyntaxNode, DiagnosticList> inlineResult = inliner.InlineFile(fileSourceText);
 
         if (inlineResult.IsErr)
         {
-            IList<Diagnostic> diagnostics = inlineResult.Err.Value;
+            DiagnosticList diagnostics = inlineResult.Err.Value;
 
             Console.Error.WriteLine("Found errors while inlining:");
 

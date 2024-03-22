@@ -1,4 +1,5 @@
-﻿using Loretta.CodeAnalysis;
+﻿using System.Linq;
+using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 
@@ -6,11 +7,21 @@ namespace LuaInliner.Core.Inlining;
 
 internal sealed partial class InlineRewriter : LuaSyntaxRewriter
 {
+    // NOTE: The node we use when looking up the edits must be the original unvisited node
+    // since changes may have occured during the base visit and the edits were added
+    // based on the original node. However, the changes must be applied to the visited node
+    // since we don't want to lose changes.
+
     public override SyntaxNode? VisitEqualsValuesClause(EqualsValuesClauseSyntax node)
     {
         var visitedNode = (EqualsValuesClauseSyntax)base.VisitEqualsValuesClause(node)!;
 
-        return GetNodeWithAddedReturns(visitedNode, visitedNode.Values, visitedNode.WithValues);
+        return GetNodeWithAddedReturns(
+            node,
+            visitedNode,
+            visitedNode.Values,
+            visitedNode.WithValues
+        );
     }
 
     public override SyntaxNode? VisitExpressionListFunctionArgument(
@@ -21,6 +32,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             base.VisitExpressionListFunctionArgument(node)!;
 
         return GetNodeWithAddedReturns(
+            node,
             visitedNode,
             visitedNode.Expressions,
             visitedNode.WithExpressions
@@ -32,6 +44,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         var visitedNode = (ReturnStatementSyntax)base.VisitReturnStatement(node)!;
 
         return GetNodeWithAddedReturns(
+            node,
             visitedNode,
             visitedNode.Expressions,
             visitedNode.WithExpressions
@@ -45,58 +58,59 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
         var visitedNode = (TableConstructorExpressionSyntax)
             base.VisitTableConstructorExpression(node)!;
 
-        // Hacky code below since table nodes are structured differently from the other
-        // "expression list" like nodes
-
-        bool handleMultipleReturns = _multipleReturnsEditsLookup.TryGetValue(
+        return GetNodeWithAddedReturns(
+            node,
             visitedNode,
-            out MultipleReturnsEdits? multipleReturnsEdits
+            visitedNode.Fields,
+            visitedNode.WithFields,
+            SyntaxFactory.UnkeyedTableField
         );
-
-        if (!handleMultipleReturns || multipleReturnsEdits is null)
-        {
-            return visitedNode;
-        }
-
-        SeparatedSyntaxList<TableFieldSyntax> oldValues = visitedNode.Fields;
-
-        IEnumerable<UnkeyedTableFieldSyntax> identifierFields =
-            multipleReturnsEdits.ReturnIdentifierNames.Select(SyntaxFactory.UnkeyedTableField);
-
-        SeparatedSyntaxList<TableFieldSyntax> newValues = oldValues
-            .RemoveAt(oldValues.Count - 1)
-            .AddRange(identifierFields);
-
-        return visitedNode
-            .WithFields(newValues)
-            .NormalizeWhitespace()
-            .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
     }
 
-    private TNode GetNodeWithAddedReturns<TNode>(
-        TNode node,
-        SeparatedSyntaxList<ExpressionSyntax> oldValues,
-        Func<SeparatedSyntaxList<ExpressionSyntax>, TNode> replaceValuesFunc
+    /// <summary>
+    /// Generic method to adding extra returns onto a expression list node.
+    /// </summary>
+    /// <typeparam name="TNode"></typeparam>
+    /// <typeparam name="TElement">Type of the element within the expression list</typeparam>
+    /// <param name="lookupNode">Node used to lookup information about multiple return edits (the original unvisited node)</param>
+    /// <param name="actualNode">Node which is the most current (the visited node)</param>
+    /// <param name="oldValues"></param>
+    /// <param name="replaceValuesFunction"></param>
+    /// <param name="identifierTransformer">Optional transformer function that converts <see cref="IdentifierNameSyntax"/> to <typeparamref name="TElement"/></param>
+    /// <returns></returns>
+    private TNode GetNodeWithAddedReturns<TNode, TElement>(
+        TNode lookupNode,
+        TNode actualNode,
+        SeparatedSyntaxList<TElement> oldValues,
+        Func<SeparatedSyntaxList<TElement>, TNode> replaceValuesFunction,
+        Func<IdentifierNameSyntax, TElement>? identifierTransformer = null
     )
-        where TNode : SyntaxNode
+        where TNode : LuaSyntaxNode
+        where TElement : LuaSyntaxNode
     {
-        bool handleMultipleReturns = _multipleReturnsEditsLookup.TryGetValue(
-            node,
+        bool handleMultipleReturns = _multipleReturnsEdits.TryGetValue(
+            lookupNode,
             out MultipleReturnsEdits? multipleReturnsEdits
         );
 
         if (!handleMultipleReturns || multipleReturnsEdits is null)
         {
-            return node;
+            return actualNode;
         }
 
-        IList<IdentifierNameSyntax> returnIdentifiers = multipleReturnsEdits.ReturnIdentifierNames;
+        List<IdentifierNameSyntax> returnVariableIdentifiers =
+            multipleReturnsEdits.ReturnIdentifierNames;
 
-        SeparatedSyntaxList<ExpressionSyntax> newValues = oldValues
+        IEnumerable<TElement> identifierValues =
+            identifierTransformer != null
+                ? returnVariableIdentifiers.Select(identifierTransformer)
+                : returnVariableIdentifiers.Cast<TElement>();
+
+        SeparatedSyntaxList<TElement> newValues = oldValues
             .RemoveAt(oldValues.Count - 1)
-            .AddRange(returnIdentifiers);
+            .AddRange(identifierValues);
 
-        return replaceValuesFunc(newValues)
+        return replaceValuesFunction(newValues)
             .NormalizeWhitespace()
             .WithTrailingTrivia(SyntaxConstants.EOL_TRIVIA);
     }
