@@ -48,7 +48,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
             return;
         }
 
-        var namedParameters = GetNamedParametersFromFunction(node);
+        var namedParameters = GetNamedParameters(node);
 
         if (namedParameters.Err is { HasValue: true, Value: Diagnostic varargDiagnostic })
         {
@@ -70,7 +70,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
         SeparatedSyntaxList<NamedParameterSyntax> parameters = namedParameters.Ok.Value;
 
         // Get the return statement nodes for the current function
-        IReadOnlyList<ReturnStatementSyntax> returns = GetFunctionReturnStatements(node);
+        IReadOnlyList<ReturnStatementSyntax> returns = GetReturnStatements(node);
 
         int maxReturnCount = returns.Any() ? returns.Max(node => node.Expressions.Count) : 0;
 
@@ -110,7 +110,7 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
     /// </summary>
     /// <param name="function"></param>
     /// <returns></returns>
-    private static IReadOnlyList<ReturnStatementSyntax> GetFunctionReturnStatements(
+    private static IReadOnlyList<ReturnStatementSyntax> GetReturnStatements(
         LocalFunctionDeclarationStatementSyntax function
     )
     {
@@ -168,10 +168,9 @@ internal sealed class InlineFunctionCollector : LuaSyntaxWalker
     /// </summary>
     /// <param name="function"></param>
     /// <returns></returns>
-    private static Result<
-        SeparatedSyntaxList<NamedParameterSyntax>,
-        Diagnostic
-    > GetNamedParametersFromFunction(LocalFunctionDeclarationStatementSyntax function)
+    private static Result<SeparatedSyntaxList<NamedParameterSyntax>, Diagnostic> GetNamedParameters(
+        LocalFunctionDeclarationStatementSyntax function
+    )
     {
         SeparatedSyntaxList<ParameterSyntax> parameters = function.Parameters.Parameters;
 

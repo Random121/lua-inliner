@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+﻿using System.Diagnostics;
 using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
@@ -13,21 +13,24 @@ internal static class Program
 {
     static void Main(string[] args)
     {
-        if (args.Length == 0)
+        if (args.Length < 2)
         {
-            Console.Error.WriteLine("No input file provided.");
+            Console.Error.WriteLine("Expected arguments: <input file> <output file>");
             return;
         }
 
-        string filePath = args[0];
+        string inputFilePath = args[0];
+        string outputFilePath = args[1];
 
-        if (!File.Exists(filePath))
+        if (!File.Exists(inputFilePath))
         {
             Console.Error.WriteLine("Specified input file does not exist.");
             return;
         }
 
-        SourceText fileSourceText = GetFileSourceText(filePath);
+        long inlineStartTime = Stopwatch.GetTimestamp();
+
+        SourceText fileSourceText = GetFileSourceText(inputFilePath);
 
         LuaParseOptions luaParseOptions = new(LuaSyntaxOptions.Luau);
         Inliner inliner = new(luaParseOptions);
@@ -48,17 +51,19 @@ internal static class Program
             return;
         }
 
-        Console.WriteLine("Inlining was successful. Writing to file...");
+        TimeSpan inlineTimeTaken = Stopwatch.GetElapsedTime(inlineStartTime);
+
+        Console.WriteLine($"Inlining completed in {inlineTimeTaken.TotalSeconds} seconds.");
 
         SyntaxNode rewrittenRoot = inlineResult.Ok.Value;
 
-        using (FileStream stream = File.Open("output.lua", FileMode.Create, FileAccess.Write))
+        using (FileStream stream = File.Open(outputFilePath, FileMode.Create, FileAccess.Write))
         using (StreamWriter writer = new(stream))
         {
             rewrittenRoot.WriteTo(writer);
         }
 
-        Console.WriteLine("Finished writing inlining result to file.");
+        Console.WriteLine("Wrote inlining result to file.");
     }
 
     private static SourceText GetFileSourceText(string filePath)

@@ -1,5 +1,4 @@
-﻿using System.Collections.Immutable;
-using Loretta.CodeAnalysis;
+﻿using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Text;
 using LuaInliner.Common;

@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Collections.Immutable;
 using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
@@ -42,7 +37,7 @@ internal sealed partial class InlinedFunctionBuilder
                 return base.VisitList(list);
             }
 
-            List<StatementSyntax> statements = [];
+            List<StatementSyntax> statements = new(list.Count);
 
             foreach (StatementSyntax originalStatement in list.Cast<StatementSyntax>())
             {
@@ -68,12 +63,12 @@ internal sealed partial class InlinedFunctionBuilder
                 IEnumerable<PrefixExpressionSyntax> neededReturnIdentifiers =
                     _returnVariableIdentifiers.Take(returnValues.Count);
 
-                AssignmentStatementSyntax assignment = SyntaxFactory.AssignmentStatement(
+                var returnValueAssignment = SyntaxFactory.AssignmentStatement(
                     SyntaxFactory.SeparatedList(neededReturnIdentifiers),
                     returnValues
                 );
 
-                statements.Add(assignment);
+                statements.Add(returnValueAssignment);
 
                 // Emulate the normal control flow of a function when
                 // encountering a return (stopping execution at that point).

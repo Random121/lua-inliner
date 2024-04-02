@@ -51,7 +51,7 @@ internal sealed partial class InlineRewriter : LuaSyntaxRewriter
             return base.VisitList(list);
         }
 
-        List<StatementSyntax> statements = [];
+        List<StatementSyntax> statements = new(list.Count);
 
         foreach (StatementSyntax originalStatement in list.Cast<StatementSyntax>())
         {

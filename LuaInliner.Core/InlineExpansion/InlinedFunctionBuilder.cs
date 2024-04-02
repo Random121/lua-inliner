@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Loretta.CodeAnalysis;
+﻿using Loretta.CodeAnalysis;
 using Loretta.CodeAnalysis.Lua;
 using Loretta.CodeAnalysis.Lua.Syntax;
 
@@ -45,7 +40,7 @@ internal sealed partial class InlinedFunctionBuilder(
     /// <returns></returns>
     private List<StatementSyntax> GetWrappedBodyWithReturnVariables(StatementSyntax wrappedBody)
     {
-        List<StatementSyntax> statements = [];
+        List<StatementSyntax> statements = new(2);
 
         if (returnVariableIdentifiers.Count != 0)
         {
@@ -64,7 +59,7 @@ internal sealed partial class InlinedFunctionBuilder(
     /// <returns></returns>
     private StatementListSyntax GetBodyWithParameters(StatementListSyntax body)
     {
-        List<StatementSyntax> statements = [];
+        List<StatementSyntax> statements = new(2);
 
         if (parameters.Count != 0)
         {
